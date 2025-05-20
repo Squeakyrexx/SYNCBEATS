@@ -99,11 +99,8 @@ export default function PlayerPage() {
   }, [currentQueueIndex, queue, toast]);
 
   const onPlayerReady = useCallback((event: any) => {
-    const playerState = event.target.getPlayerState();
-    // -1: unstarted, 0: ended, 1: playing, 2: paused, 3: buffering, 5: video cued
-    if (playerState === -1 || playerState === 2 || playerState === 5) {
-      event.target.playVideo();
-    }
+    // Force play video when it's ready
+    event.target.playVideo();
   }, []);
 
   const onPlayerError = useCallback((event: any) => {
@@ -163,17 +160,14 @@ export default function PlayerPage() {
         playerRef.current.destroy();
         playerRef.current = null;
       }
-      // Clear the div content if no song is to play
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) {
         playerDiv.innerHTML = '';
       }
     }
     
-    // Cleanup function for when the component unmounts or dependencies change BEFORE next effect run
     return () => {
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-         // Check if playerRef.current is not already destroyed or null
         try {
             playerRef.current.destroy();
         } catch (e) {
@@ -241,8 +235,6 @@ export default function PlayerPage() {
     setQueue(prevQueue => {
       const newQueue = [...prevQueue, song];
       if (currentQueueIndex === -1) {
-        // If nothing was playing, start playing this song.
-        // The useEffect for currentQueueIndex will handle player initialization.
         setCurrentQueueIndex(newQueue.length - 1);
       }
       return newQueue;
@@ -275,10 +267,9 @@ export default function PlayerPage() {
       playerRef.current = null;
     }
     setCurrentQueueIndex(-1); 
-    // setQueue([]); // Optionally clear the whole queue
     const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
     if (playerDiv) {
-      playerDiv.innerHTML = ''; // Clear the placeholder
+      playerDiv.innerHTML = ''; 
     }
   };
 
