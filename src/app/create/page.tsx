@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useCallback } from 'react';
@@ -7,24 +8,43 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Logo } from '@/components/Logo';
-import { Copy, ArrowRight, RefreshCw, Check } from 'lucide-react';
+import { Copy, ArrowRight, RefreshCw, Check, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { db } from '@/lib/firebase';
+import { ref, set, get } from 'firebase/database';
 
 export default function CreateGroupPage() {
   const [groupCode, setGroupCode] = useState('');
   const [copied, setCopied] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
 
-  const generateGroupCode = useCallback(() => {
-    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setGroupCode(code);
-    return code;
-  }, []);
+  const generateUniqueGroupCode = useCallback(async () => {
+    let attempts = 0;
+    const maxAttempts = 10;
+    while (attempts < maxAttempts) {
+      const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+      // Check if code already exists in Firebase
+      const groupRef = ref(db, `groups/${code}`);
+      const snapshot = await get(groupRef);
+      if (!snapshot.exists()) {
+        setGroupCode(code);
+        return code;
+      }
+      attempts++;
+    }
+    toast({
+      title: "Error",
+      description: "Could not generate a unique group code. Please try again.",
+      variant: "destructive",
+    });
+    return '';
+  }, [toast]);
 
   useEffect(() => {
-    generateGroupCode();
-  }, [generateGroupCode]);
+    generateUniqueGroupCode();
+  }, [generateUniqueGroupCode]);
 
   const handleCopyCode = () => {
     if (groupCode) {
@@ -46,9 +66,37 @@ export default function CreateGroupPage() {
     }
   };
 
-  const handleGoToPlayer = () => {
-    if (groupCode) {
+  const handleCreateAndGoToPlayer = async () => {
+    if (!groupCode) {
+      toast({
+        title: "Error",
+        description: "Group code is not generated yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsCreating(true);
+    try {
+      const groupRef = ref(db, `groups/${groupCode}`);
+      await set(groupRef, {
+        createdAt: new Date().toISOString(),
+        queue: [],
+        currentQueueIndex: -1,
+        // Add other initial group data as needed
+      });
+      toast({
+        title: "Group Created!",
+        description: `Group ${groupCode} has been created successfully.`,
+      });
       router.push(`/player/${groupCode}`);
+    } catch (error) {
+      console.error("Failed to create group in Firebase:", error);
+      toast({
+        title: "Firebase Error",
+        description: "Could not create the group. Please check your connection or Firebase setup.",
+        variant: "destructive",
+      });
+      setIsCreating(false);
     }
   };
 
@@ -66,23 +114,24 @@ export default function CreateGroupPage() {
             <div className="flex items-center justify-center space-x-2">
               <Input 
                 readOnly 
-                value={groupCode} 
+                value={groupCode || "Generating..."} 
                 className="text-4xl font-bold tracking-widest text-center h-auto py-3 bg-muted text-foreground border-2 border-dashed border-primary" 
                 aria-label="Group Code"
               />
-              <Button variant="outline" size="icon" onClick={() => generateGroupCode()} aria-label="Generate new code">
+              <Button variant="outline" size="icon" onClick={generateUniqueGroupCode} aria-label="Generate new code" disabled={!groupCode}>
                 <RefreshCw className="h-5 w-5" />
               </Button>
             </div>
           </div>
-          <Button onClick={handleCopyCode} className="w-full text-lg py-3" disabled={!groupCode}>
+          <Button onClick={handleCopyCode} className="w-full text-lg py-3" disabled={!groupCode || isCreating}>
             {copied ? <Check className="mr-2 h-5 w-5" /> : <Copy className="mr-2 h-5 w-5" />}
             {copied ? 'Copied!' : 'Copy Code'}
           </Button>
         </CardContent>
         <CardFooter className="flex flex-col space-y-4">
-          <Button onClick={handleGoToPlayer} className="w-full text-lg py-3" disabled={!groupCode}>
-            Go to Player <ArrowRight className="ml-2 h-5 w-5" />
+          <Button onClick={handleCreateAndGoToPlayer} className="w-full text-lg py-3" disabled={!groupCode || isCreating}>
+            {isCreating && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+            {isCreating ? "Creating..." : "Go to Player"} <ArrowRight className="ml-2 h-5 w-5" />
           </Button>
           <Button variant="link" asChild>
             <Link href="/">Back to Home</Link>
