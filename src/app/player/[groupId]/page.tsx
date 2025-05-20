@@ -66,9 +66,8 @@ export default function PlayerPage() {
     }
   }, [apiKeyMissing, toast]);
 
-  // Effect for loading the YouTube Iframe API script
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.YT) {
+    if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
       setYoutubeApiReady(true);
       return;
     }
@@ -93,8 +92,8 @@ export default function PlayerPage() {
   }, [currentQueueIndex, queue, toast]);
 
   const onPlayerReady = useCallback((event: any) => {
-    // Autoplay should handle this via playerVars, or event.target.playVideo();
-    // event.target.playVideo(); // Usually handled by autoplay: 1 in playerVars
+     // event.target.playVideo(); // Autoplay should handle this if `autoplay:1` is effective.
+                               // Or, if issues persist with autoplay:1, uncomment this.
   }, []);
 
   const onPlayerError = useCallback((event: any) => {
@@ -108,7 +107,7 @@ export default function PlayerPage() {
   }, [toast, playNextSongInQueue]);
 
   const onPlayerStateChange = useCallback((event: any) => {
-    if (event.data === window.YT?.PlayerState?.ENDED) {
+    if (window.YT && window.YT.PlayerState && event.data === window.YT.PlayerState.ENDED) {
       playNextSongInQueue();
     }
   }, [playNextSongInQueue]);
@@ -116,6 +115,7 @@ export default function PlayerPage() {
   const initializePlayer = useCallback((videoId: string) => {
     if (playerRef.current && typeof playerRef.current.destroy === 'function') {
       playerRef.current.destroy();
+      playerRef.current = null; 
     }
     if (document.getElementById(PLAYER_CONTAINER_ID) && window.YT && window.YT.Player) {
       playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
@@ -124,6 +124,8 @@ export default function PlayerPage() {
           autoplay: 1,
           enablejsapi: 1,
           controls: 1,
+          modestbranding: 1, // Optional: reduces YouTube logo
+          rel: 0, // Optional: don't show related videos at end
         },
         events: {
           'onReady': onPlayerReady,
@@ -134,40 +136,31 @@ export default function PlayerPage() {
     }
   }, [onPlayerReady, onPlayerStateChange, onPlayerError]);
 
-  // Effect for managing the player instance and loading videos
   useEffect(() => {
     if (!youtubeApiReady) return;
 
-    const songToPlay = currentQueueIndex !== -1 ? queue[currentQueueIndex] : null;
+    const songToPlay = currentQueueIndex !== -1 && queue.length > 0 ? queue[currentQueueIndex] : null;
 
     if (songToPlay) {
-      const currentPlayerVideoId = playerRef.current?.getVideoData ? playerRef.current.getVideoData().video_id : null;
-      if (!playerRef.current || currentPlayerVideoId !== songToPlay.id) {
-        initializePlayer(songToPlay.id);
-      } else {
-        // Player exists and is for the correct video. Ensure it's playing if paused/cued/ended.
-        const playerState = playerRef.current.getPlayerState ? playerRef.current.getPlayerState() : -1;
-        // Check for states where video is not actively playing: 2 (PAUSED), 5 (CUED), 0 (ENDED)
-        if (playerState === window.YT.PlayerState.PAUSED || 
-            playerState === window.YT.PlayerState.CUED ||
-            (playerState === window.YT.PlayerState.ENDED && currentPlayerVideoId === songToPlay.id) // Replay if ended and it's the selected song
-           ) {
-          if (playerRef.current.playVideo) {
-            playerRef.current.playVideo();
-          }
-        }
+      // If a song is designated to play, (re)initialize the player for it.
+      // This ensures that `initializePlayer` (and its embedded callbacks like `onStateChange`)
+      // are always the latest versions, reflecting the current `queue` state.
+      initializePlayer(songToPlay.id);
+    } else { 
+      // No song to play (queue empty or index is -1 after queue finished)
+      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        playerRef.current.destroy();
+        playerRef.current = null;
       }
-    } else { // No song to play
-      if (playerRef.current && typeof playerRef.current.stopVideo === 'function') {
-        playerRef.current.stopVideo();
-      }
-      // Optional: Destroy player if no song is active and placeholder is gone
-      // This might be too aggressive if the player div is still there and we want to reuse it.
-      // if (playerRef.current && typeof playerRef.current.destroy === 'function' && !document.getElementById(PLAYER_CONTAINER_ID)) {
-      //   playerRef.current.destroy();
-      //   playerRef.current = null;
-      // }
     }
+    
+    // Cleanup function: destroy player on component unmount or when dependencies change causing effect re-run before new setup
+    return () => {
+      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
+    };
   }, [youtubeApiReady, currentQueueIndex, queue, initializePlayer]);
 
 
@@ -224,13 +217,13 @@ export default function PlayerPage() {
   };
 
   const handleSelectSongFromSearch = (song: Song) => {
-    setQueue(prevQueue => {
-      const newQueue = [...prevQueue, song];
-      return newQueue;
-    });
-
+    setQueue(prevQueue => [...prevQueue, song]);
+    
+    // If nothing was playing before this song was added, set currentQueueIndex to start it.
+    // queue.length (from the outer scope) refers to the length *before* this new song is added.
+    // So, if the queue was empty (length 0), new index becomes 0.
     if (currentQueueIndex === -1) {
-      setCurrentQueueIndex(queue.length); // queue.length here is the length *before* this new song is effectively added to the state for this render cycle
+      setCurrentQueueIndex(queue.length); 
     }
 
     toast({
@@ -252,11 +245,9 @@ export default function PlayerPage() {
   };
 
   const handleStopAndClear = () => {
-    setCurrentQueueIndex(-1);
-    // setQueue([]); // Optionally clear the entire queue
-    if (playerRef.current && typeof playerRef.current.stopVideo === 'function') {
-      playerRef.current.stopVideo();
-    }
+    setCurrentQueueIndex(-1); 
+    // Optionally clear the entire queue if desired: setQueue([]);
+    // The player will be stopped/destroyed by the main useEffect when currentQueueIndex becomes -1
   };
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
@@ -332,7 +323,7 @@ export default function PlayerPage() {
         </div>
 
         <div className="lg:w-1/3 flex flex-col gap-6">
-          <Card className="shadow-lg sticky top-[85px]">
+          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)]"> {/* Adjusted sticky top */}
             <CardHeader>
               <CardTitle className="text-xl font-semibold">Search Songs</CardTitle>
               <CardDescription>Find songs on YouTube.</CardDescription>
@@ -372,7 +363,7 @@ export default function PlayerPage() {
                 <CardTitle>Search Results</CardTitle>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3">
+                <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3"> {/* Adjust height as needed */}
                   <div className="space-y-3">
                     {searchResults.map((song) => (
                       <Card
@@ -405,7 +396,7 @@ export default function PlayerPage() {
                 <CardTitle>Up Next ({upNextQueue.length})</CardTitle>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3">
+                <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3"> {/* Adjust height as needed */}
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card
@@ -437,3 +428,4 @@ export default function PlayerPage() {
     </div>
   );
 }
+
