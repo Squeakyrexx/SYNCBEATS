@@ -92,7 +92,7 @@ export default function PlayerPage() {
   }, [currentQueueIndex, queue, toast]);
 
   const onPlayerReady = useCallback((event: any) => {
-     // event.target.playVideo(); // Autoplay should handle this if `autoplay:1` is effective.
+     event.target.playVideo(); // Autoplay should handle this if `autoplay:1` is effective.
                                // Or, if issues persist with autoplay:1, uncomment this.
   }, []);
 
@@ -124,8 +124,8 @@ export default function PlayerPage() {
           autoplay: 1,
           enablejsapi: 1,
           controls: 1,
-          modestbranding: 1, // Optional: reduces YouTube logo
-          rel: 0, // Optional: don't show related videos at end
+          modestbranding: 1, 
+          rel: 0, 
         },
         events: {
           'onReady': onPlayerReady,
@@ -142,19 +142,14 @@ export default function PlayerPage() {
     const songToPlay = currentQueueIndex !== -1 && queue.length > 0 ? queue[currentQueueIndex] : null;
 
     if (songToPlay) {
-      // If a song is designated to play, (re)initialize the player for it.
-      // This ensures that `initializePlayer` (and its embedded callbacks like `onStateChange`)
-      // are always the latest versions, reflecting the current `queue` state.
       initializePlayer(songToPlay.id);
     } else { 
-      // No song to play (queue empty or index is -1 after queue finished)
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
       }
     }
     
-    // Cleanup function: destroy player on component unmount or when dependencies change causing effect re-run before new setup
     return () => {
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
@@ -219,9 +214,6 @@ export default function PlayerPage() {
   const handleSelectSongFromSearch = (song: Song) => {
     setQueue(prevQueue => [...prevQueue, song]);
     
-    // If nothing was playing before this song was added, set currentQueueIndex to start it.
-    // queue.length (from the outer scope) refers to the length *before* this new song is added.
-    // So, if the queue was empty (length 0), new index becomes 0.
     if (currentQueueIndex === -1) {
       setCurrentQueueIndex(queue.length); 
     }
@@ -246,8 +238,6 @@ export default function PlayerPage() {
 
   const handleStopAndClear = () => {
     setCurrentQueueIndex(-1); 
-    // Optionally clear the entire queue if desired: setQueue([]);
-    // The player will be stopped/destroyed by the main useEffect when currentQueueIndex becomes -1
   };
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
@@ -323,7 +313,7 @@ export default function PlayerPage() {
         </div>
 
         <div className="lg:w-1/3 flex flex-col gap-6">
-          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)]"> {/* Adjusted sticky top */}
+          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)]">
             <CardHeader>
               <CardTitle className="text-xl font-semibold">Search Songs</CardTitle>
               <CardDescription>Find songs on YouTube.</CardDescription>
@@ -363,7 +353,7 @@ export default function PlayerPage() {
                 <CardTitle>Search Results</CardTitle>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3"> {/* Adjust height as needed */}
+                <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3">
                   <div className="space-y-3">
                     {searchResults.map((song) => (
                       <Card
@@ -396,7 +386,7 @@ export default function PlayerPage() {
                 <CardTitle>Up Next ({upNextQueue.length})</CardTitle>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3"> {/* Adjust height as needed */}
+                <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3">
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card
