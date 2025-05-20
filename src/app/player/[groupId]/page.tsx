@@ -105,7 +105,11 @@ export default function PlayerPage() {
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
-        event.target.playVideo();
+      // Check player state before playing, though autoplay:1 should handle it.
+      // const playerState = event.target.getPlayerState();
+      // if (playerState === -1 || playerState === YT.PlayerState.PAUSED || playerState === YT.PlayerState.CUED) {
+      // }
+      event.target.playVideo();
     }
   }, []);
 
@@ -172,10 +176,12 @@ export default function PlayerPage() {
         playerDiv.innerHTML = ''; 
       }
       if (queue.length === 0) { 
+        // Clear suggestions if queue becomes empty
         setSuggestedSongs([]);
       }
     }
         
+    // Cleanup suggestion debounce timer on component unmount or when dependencies change
     return () => {
       if (suggestionDebounceTimer.current) {
         clearTimeout(suggestionDebounceTimer.current);
@@ -199,7 +205,8 @@ export default function PlayerPage() {
       return;
     }
     setIsLoading(true);
-    setSearchResults([]);
+    setSearchResults([]); // Clear previous results
+    setSuggestedSongs([]); // Clear suggestions when starting a new search
 
     try {
       const response = await fetch(
@@ -238,20 +245,19 @@ export default function PlayerPage() {
   };
 
   const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
-    if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id) {
+    if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId) {
       setSuggestedSongs([]);
-      if (songForSuggestions && !songForSuggestions.id) {
-        console.warn("Cannot fetch suggestions: songForSuggestions is missing an ID.");
+      if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId)) {
+        console.warn("Cannot fetch suggestions: songForSuggestions is missing an ID or channelId.", songForSuggestions);
       }
       return;
     }
     setIsLoadingSuggestions(true);
     setSuggestedSongs([]);
   
-    let suggestionQuery = songForSuggestions.artist; // Default to artist name
+    let suggestionQuery = songForSuggestions.artist; 
   
     try {
-      // 1. Get details of the song to extract potential genre clues
       const videoDetailsResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${songForSuggestions.id}&key=${YOUTUBE_API_KEY}`
       );
@@ -265,43 +271,40 @@ export default function PlayerPage() {
   
           if (topicDetails && topicDetails.topicCategories) {
             const musicCategory = topicDetails.topicCategories.find((catUrl: string) => 
-              catUrl.toLowerCase().includes("music")
+              catUrl.toLowerCase().includes("music") && !catUrl.toLowerCase().includes("video_game_music") // Exclude game music
             );
             if (musicCategory) {
-              // Extract genre from Wikipedia URL, e.g., "Pop_music" -> "Pop music"
               genreHint = decodeURIComponent(musicCategory.substring(musicCategory.lastIndexOf('/') + 1).replace(/_/g, ' '));
             }
           }
           
-          // Fallback or supplement with tags if no good topicCategory or to refine
           if ((!genreHint || genreHint.toLowerCase() === "music") && snippet.tags && snippet.tags.length > 0) {
-            // Try to find a more specific music genre tag
             const specificGenreTag = snippet.tags.find((tag: string) => {
               const lowerTag = tag.toLowerCase();
-              return (lowerTag.includes("pop") || lowerTag.includes("rock") || lowerTag.includes("hip hop") || lowerTag.includes("electronic") || lowerTag.includes("r&b") || lowerTag.includes("jazz") || lowerTag.includes("classical")) && lowerTag.includes("music");
+              return (lowerTag.includes("pop") || lowerTag.includes("rock") || lowerTag.includes("hip hop") || lowerTag.includes("electronic") || lowerTag.includes("r&b") || lowerTag.includes("jazz") || lowerTag.includes("classical") || lowerTag.includes("soul") || lowerTag.includes("funk")) && !lowerTag.includes("soundtrack");
             });
             if (specificGenreTag) {
               genreHint = specificGenreTag;
-            } else if (!genreHint) { // If still no genreHint, take a general music tag
+            } else if (!genreHint) { 
                 const musicTag = snippet.tags.find((tag: string) => tag.toLowerCase().includes("music"));
                 if (musicTag) genreHint = musicTag;
             }
           }
   
-          if (genreHint && genreHint.toLowerCase() !== "music") {
-            // Construct query like "ArtistName GenreName"
+          if (genreHint && genreHint.toLowerCase() !== "music" && genreHint.trim().length > 0) {
             suggestionQuery = `${songForSuggestions.artist} ${genreHint.replace(/ music$/i, '').trim()}`;
           } else {
-            suggestionQuery = `${songForSuggestions.artist} music`; // Fallback if only "Music" or no hint
+            suggestionQuery = `${songForSuggestions.artist} music`; 
           }
+          console.log("Constructed suggestion query:", suggestionQuery);
         }
       } else {
         const errorData = await videoDetailsResponse.json();
         console.warn("Failed to fetch video details for suggestions:", errorData.error?.message || videoDetailsResponse.status);
-        toast({ title: "Suggestion Info", description: "Could not fetch detailed info for suggestions, using artist name.", variant: "default" });
+        // Fallback to artist + "music" if details fail
+        suggestionQuery = `${songForSuggestions.artist} music`;
       }
   
-      // 2. Search for songs based on the constructed query
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -318,10 +321,11 @@ export default function PlayerPage() {
       const items = data.items || [];
   
       if (items.length === 0 && searchResponse.ok) {
-        toast({
-          title: "No Suggestions Found",
-          description: "The API returned no videos for the generated suggestion query.",
-        });
+        // This toast is helpful for debugging if API returns nothing
+        // toast({
+        //   title: "No Suggestions Found",
+        //   description: "The API returned no videos for the generated suggestion query.",
+        // });
       }
   
       const newSuggestions: Song[] = items
@@ -334,9 +338,9 @@ export default function PlayerPage() {
           dataAiHint: "music video",
         }))
         .filter(newSong => 
-            !queue.find(qSong => qSong.id === newSong.id) && // Not already in queue
-            newSong.id !== songForSuggestions.id && // Not the song that triggered suggestions
-            newSong.id !== (currentPlayingSong?.id || '') // Not the *actual* current playing song
+            !queue.find(qSong => qSong.id === newSong.id) && 
+            newSong.id !== songForSuggestions.id && 
+            newSong.id !== (currentPlayingSong?.id || '') 
         ); 
       
       setSuggestedSongs(newSuggestions.slice(0, 5));
@@ -353,8 +357,12 @@ export default function PlayerPage() {
   const handleSelectSong = (song: Song) => {
     setQueue(prevQueue => {
       const newQueue = [...prevQueue, song];
-      if (currentQueueIndex === -1 && newQueue.length > 0) { 
+      // If this is the first song added to an empty queue, start playing it.
+      if (currentQueueIndex === -1 && newQueue.length === 1) { 
         setCurrentQueueIndex(0); 
+      } else if (currentQueueIndex === -1 && newQueue.length > 0 && playerRef.current === null) {
+        // If player isn't active and queue has items, set current index to start.
+        setCurrentQueueIndex(0);
       }
       return newQueue;
     });
@@ -370,11 +378,11 @@ export default function PlayerPage() {
       clearTimeout(suggestionDebounceTimer.current);
     }
     suggestionDebounceTimer.current = setTimeout(() => {
-      if (song.id && song.artist) { 
-        handleFetchSuggestions(song); // Pass the full song object
+      if (song.id && song.artist && song.channelId) { 
+        handleFetchSuggestions(song); 
       } else {
-        console.warn("Selected song is missing ID or artist, cannot fetch suggestions:", song);
-        toast({ title: "Suggestion Info", description: "Could not fetch suggestions as song's ID or artist is missing."});
+        console.warn("Selected song is missing ID, artist, or channelId. Cannot fetch suggestions:", song);
+        toast({ title: "Suggestion Info", description: "Could not fetch suggestions as crucial song data is missing."});
       }
     }, 1000);
   };
@@ -485,7 +493,7 @@ export default function PlayerPage() {
 
           {/* Up Next Queue Section - Moved to Left Panel */}
           {upNextQueue.length > 0 && (
-            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[400px] lg:max-h-none">
+            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-none">
               <CardHeader>
                 <CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle>
               </CardHeader>
@@ -561,7 +569,7 @@ export default function PlayerPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
-                <ScrollArea className="h-full max-h-[300px] lg:max-h-[calc(50vh-250px)] px-4 pb-4"> 
+                <ScrollArea className="h-full max-h-[300px] px-4 pb-4"> 
                   <div className="space-y-3">
                     {isLoading && searchResults.length === 0 && Array.from({ length: 3 }).map((_, index) => (
                       <Card key={`skeleton-search-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
@@ -605,7 +613,7 @@ export default function PlayerPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
-                <ScrollArea className="h-full max-h-[300px] lg:max-h-[calc(50vh-250px)] px-4 pb-4"> 
+                <ScrollArea className="h-full max-h-[300px] px-4 pb-4"> 
                   <div className="space-y-3">
                     {isLoadingSuggestions && Array.from({ length: 2 }).map((_, index) => (
                       <Card key={`skeleton-suggest-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
@@ -634,7 +642,11 @@ export default function PlayerPage() {
                       </Card>
                     ))}
                     {!isLoadingSuggestions && suggestedSongs.length === 0 && queue.length > 0 && (
-                      <p className="text-sm text-muted-foreground text-center py-4">No new suggestions from this artist/channel. Try another song!</p>
+                       <div className="text-center py-4">
+                        <ThumbsUp className="h-10 w-10 text-muted-foreground mx-auto mb-2"/>
+                        <p className="text-sm text-muted-foreground">No new suggestions from this artist/genre.</p>
+                        <p className="text-xs text-muted-foreground">Try adding a different song to the queue.</p>
+                      </div>
                     )}
                   </div>
                 </ScrollArea>
@@ -653,3 +665,4 @@ export default function PlayerPage() {
     </div>
   );
 }
+
