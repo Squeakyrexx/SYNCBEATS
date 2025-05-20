@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, FormEvent } from 'react';
@@ -10,25 +11,20 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Copy, Check, Share2, PlayCircle, ListMusic } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 interface Song {
   id: string; // YouTube video ID
   title: string;
-  artist: string;
+  artist: string; // Corresponds to YouTube's channelTitle
   thumbnailUrl: string;
   dataAiHint: string;
 }
 
-const mockSongs: Song[] = [
-  { id: 'dQw4w9WgXcQ', title: 'Never Gonna Give You Up', artist: 'Rick Astley', thumbnailUrl: 'https://placehold.co/120x90.png', dataAiHint: 'music video' },
-  { id: '3tmd-ClpJxA', title: 'Shape of You', artist: 'Ed Sheeran', thumbnailUrl: 'https://placehold.co/120x90.png', dataAiHint: 'pop music' },
-  { id: 'kJQP7kiw5Fk', title: 'Despacito', artist: 'Luis Fonsi ft. Daddy Yankee', thumbnailUrl: 'https://placehold.co/120x90.png', dataAiHint: 'latin music' },
-  { id: 'RgKAFK5djSk', title: 'Uptown Funk', artist: 'Mark Ronson ft. Bruno Mars', thumbnailUrl: 'https://placehold.co/120x90.png', dataAiHint: 'funk music' },
-  { id: 'CevxZvSJLk8', title: 'Bohemian Rhapsody', artist: 'Queen', thumbnailUrl: 'https://placehold.co/120x90.png', dataAiHint: 'rock classic' },
-];
+const YOUTUBE_API_KEY = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 
 export default function PlayerPage() {
   const params = useParams();
@@ -41,38 +37,90 @@ export default function PlayerPage() {
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
 
   useEffect(() => {
-    // Initial load of some songs or based on a default query if desired
-    setSearchResults(mockSongs.slice(0,3)); // Show a few songs initially
+    if (!YOUTUBE_API_KEY) {
+      setApiKeyMissing(true);
+      toast({
+        title: "API Key Missing",
+        description: "YouTube API key is not configured. Please set NEXT_PUBLIC_YOUTUBE_API_KEY in your .env.local file.",
+        variant: "destructive",
+        duration: Infinity,
+      });
+    }
   }, []);
 
   const handleSearch = async (e?: FormEvent<HTMLFormElement>) => {
     e?.preventDefault();
+    if (apiKeyMissing) {
+       toast({
+        title: "API Key Missing",
+        description: "Cannot search without a YouTube API key.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!searchQuery.trim()) {
-      setSearchResults(mockSongs.slice(0,3)); // Reset to initial if search is empty
+      setSearchResults([]);
       return;
     }
     setIsLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const filteredSongs = mockSongs.filter(song => 
-      song.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      song.artist.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-    setSearchResults(filteredSongs);
-    setIsLoading(false);
-    if (filteredSongs.length === 0) {
-      toast({ title: "No results", description: "Try a different search term."});
+    setSearchResults([]);
+
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
+      );
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("YouTube API Error:", errorData);
+        const errorMessage = errorData?.error?.message || `Failed to fetch songs. Status: ${response.status}`;
+        toast({
+          title: "Search Error",
+          description: errorMessage,
+          variant: "destructive",
+        });
+        setSearchResults([]);
+        setIsLoading(false);
+        return;
+      }
+      const data = await response.json();
+      const items = data.items || [];
+      const songs: Song[] = items.map((item: any) => ({
+        id: item.id.videoId,
+        title: item.snippet.title,
+        artist: item.snippet.channelTitle,
+        thumbnailUrl: item.snippet.thumbnails.default.url,
+        dataAiHint: "music video", // Generic hint for YouTube results
+      }));
+      setSearchResults(songs);
+      if (songs.length === 0) {
+        toast({ title: "No results", description: "Try a different search term." });
+      }
+    } catch (error) {
+      console.error("Failed to search songs:", error);
+      toast({
+        title: "Search Error",
+        description: "An unexpected error occurred while searching.",
+        variant: "destructive",
+      });
+      setSearchResults([]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleSelectSong = (song: Song) => {
     setSelectedSong(song);
+    // Here you would typically send song.id (videoId) to your backend
+    // to manage the shared playback_state for the group.
+    // For this example, we're just setting it locally.
+    console.log("Selected song ID:", song.id, "Group ID:", groupId);
   };
 
   const handleInviteFriend = () => {
-    const inviteMessage = `Join my SyncBeats room! Code: ${groupId}\n${window.location.href}`;
+    const inviteMessage = `Join my SyncBeats room! Code: ${groupId}\n${window.location.origin}/join?group=${groupId}\nOr open the player directly: ${window.location.href}`;
     navigator.clipboard.writeText(inviteMessage).then(() => {
       setCopiedInvite(true);
       toast({
@@ -117,6 +165,16 @@ export default function PlayerPage() {
       <main className="container mx-auto p-4 flex-grow flex flex-col lg:flex-row gap-6">
         {/* Left Panel: Player or Search Results */}
         <div className="lg:w-2/3 flex flex-col">
+          {apiKeyMissing && !selectedSong && (
+             <Alert variant="destructive" className="mb-4">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>YouTube API Key Missing</AlertTitle>
+              <AlertDescription>
+                The application is missing the YouTube API Key. Please set the <code>NEXT_PUBLIC_YOUTUBE_API_KEY</code> environment variable in a <code>.env.local</code> file in the root of your project and restart the development server.
+                Song search functionality will be disabled until the key is provided.
+              </AlertDescription>
+            </Alert>
+          )}
           {selectedSong ? (
             <Card className="shadow-xl flex-grow flex flex-col">
               <CardHeader>
@@ -128,7 +186,7 @@ export default function PlayerPage() {
                   <iframe
                     width="100%"
                     height="100%"
-                    src={`https://www.youtube.com/embed/${selectedSong.id}?autoplay=1`}
+                    src={`https://www.youtube.com/embed/${selectedSong.id}?autoplay=1&enablejsapi=1`}
                     title="YouTube video player"
                     frameBorder="0"
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -146,7 +204,7 @@ export default function PlayerPage() {
             <div className="space-y-4 flex-grow flex flex-col">
                 <h2 className="text-2xl font-semibold flex items-center"><ListMusic className="mr-3 h-7 w-7 text-primary"/> Song Queue / Search Results</h2>
                 <p className="text-muted-foreground">
-                  Select a song from the list to start playing. Use the search on the right to find more songs.
+                  {apiKeyMissing ? "YouTube search is disabled due to missing API key." : "Select a song from the list to start playing. Use the search on the right to find more songs."}
                 </p>
                 {isLoading ? (
                   Array.from({ length: 3 }).map((_, index) => (
@@ -160,7 +218,7 @@ export default function PlayerPage() {
                     </Card>
                   ))
                 ) : searchResults.length > 0 ? (
-                  <ScrollArea className="flex-grow h-[calc(100vh-350px)] lg:h-auto pr-3">
+                  <ScrollArea className="flex-grow h-[calc(100vh-400px)] lg:h-auto pr-3">
                     <div className="space-y-3">
                     {searchResults.map((song) => (
                       <Card 
@@ -169,6 +227,7 @@ export default function PlayerPage() {
                         onClick={() => handleSelectSong(song)}
                         tabIndex={0}
                         onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}
+                        aria-label={`Play ${song.title} by ${song.artist}`}
                       >
                         <Image 
                           src={song.thumbnailUrl} 
@@ -177,10 +236,11 @@ export default function PlayerPage() {
                           height={60} 
                           className="rounded object-cover aspect-[4/3]"
                           data-ai-hint={song.dataAiHint}
+                          unoptimized={song.thumbnailUrl.includes('ytimg.com')} // YouTube thumbnails are already optimized
                         />
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate text-foreground">{song.title}</p>
-                          <p className="text-sm text-muted-foreground truncate">{song.artist}</p>
+                          <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p>
+                          <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
                         </div>
                         <Button variant="ghost" size="icon" aria-label={`Play ${song.title}`}>
                           <PlayCircle className="h-6 w-6 text-primary" />
@@ -190,8 +250,8 @@ export default function PlayerPage() {
                     </div>
                   </ScrollArea>
                 ) : (
-                  <div className="text-center py-10 text-muted-foreground">
-                    <p>No songs found. Try searching for something else!</p>
+                  !apiKeyMissing && <div className="text-center py-10 text-muted-foreground">
+                    <p>No songs found or no search performed yet. Try searching for something!</p>
                   </div>
                 )}
             </div>
@@ -200,7 +260,7 @@ export default function PlayerPage() {
 
         {/* Right Panel: Search */}
         <div className="lg:w-1/3">
-          <Card className="shadow-lg sticky top-[85px]"> {/* 68px header + 16px margin approx */}
+          <Card className="shadow-lg sticky top-[85px]"> {/* Approx header height + margin */}
             <CardHeader>
               <CardTitle className="text-xl font-semibold">Search Songs</CardTitle>
               <CardDescription>Find songs on YouTube to add to the queue.</CardDescription>
@@ -214,15 +274,30 @@ export default function PlayerPage() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="flex-grow"
                   aria-label="Search songs"
+                  disabled={apiKeyMissing || isLoading}
                 />
-                <Button type="submit" size="icon" aria-label="Search" disabled={isLoading}>
+                <Button type="submit" size="icon" aria-label="Search" disabled={apiKeyMissing || isLoading || !searchQuery.trim()}>
                   <Search className="h-5 w-5" />
                 </Button>
               </form>
+              {apiKeyMissing && (
+                 <Alert variant="destructive" className="mt-4">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>API Key Missing</AlertTitle>
+                    <AlertDescription>
+                        YouTube search is disabled. Set <code>NEXT_PUBLIC_YOUTUBE_API_KEY</code> in <code>.env.local</code>.
+                    </AlertDescription>
+                </Alert>
+              )}
             </CardContent>
-            {!selectedSong && searchResults.length > 0 && (
+            {!selectedSong && searchResults.length > 0 && !isLoading && (
               <CardFooter className="text-sm text-muted-foreground">
                 Showing {searchResults.length} result(s).
+              </CardFooter>
+            )}
+             {isLoading && (
+              <CardFooter className="text-sm text-muted-foreground">
+                Searching...
               </CardFooter>
             )}
           </Card>
@@ -231,3 +306,4 @@ export default function PlayerPage() {
     </div>
   );
 }
+
