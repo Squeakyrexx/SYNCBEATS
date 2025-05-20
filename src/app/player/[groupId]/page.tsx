@@ -86,14 +86,24 @@ export default function PlayerPage() {
     if (currentQueueIndex < queue.length - 1) {
       setCurrentQueueIndex(prevIndex => prevIndex + 1);
     } else {
-      setCurrentQueueIndex(-1);
       toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
+      if (playerRef.current && typeof playerRef.current.stopVideo === 'function') {
+        playerRef.current.stopVideo();
+      }
+      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
+      setCurrentQueueIndex(-1);
     }
   }, [currentQueueIndex, queue, toast]);
 
   const onPlayerReady = useCallback((event: any) => {
-     event.target.playVideo(); // Autoplay should handle this if `autoplay:1` is effective.
-                               // Or, if issues persist with autoplay:1, uncomment this.
+    const playerState = event.target.getPlayerState();
+    // -1: unstarted, 0: ended, 1: playing, 2: paused, 3: buffering, 5: video cued
+    if (playerState === -1 || playerState === 2 || playerState === 5) {
+      event.target.playVideo();
+    }
   }, []);
 
   const onPlayerError = useCallback((event: any) => {
@@ -117,7 +127,10 @@ export default function PlayerPage() {
       playerRef.current.destroy();
       playerRef.current = null; 
     }
-    if (document.getElementById(PLAYER_CONTAINER_ID) && window.YT && window.YT.Player) {
+    const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
+    if (playerDiv && window.YT && window.YT.Player) {
+       // Clear previous player content if any, to ensure clean slate
+      playerDiv.innerHTML = '';
       playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
         videoId: videoId,
         playerVars: {
@@ -133,13 +146,15 @@ export default function PlayerPage() {
           'onError': onPlayerError,
         },
       });
+    } else if (!playerDiv) {
+        console.error(`Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
     }
   }, [onPlayerReady, onPlayerStateChange, onPlayerError]);
 
   useEffect(() => {
     if (!youtubeApiReady) return;
 
-    const songToPlay = currentQueueIndex !== -1 && queue.length > 0 ? queue[currentQueueIndex] : null;
+    const songToPlay = currentQueueIndex !== -1 && queue.length > 0 && queue[currentQueueIndex] ? queue[currentQueueIndex] : null;
 
     if (songToPlay) {
       initializePlayer(songToPlay.id);
@@ -148,11 +163,22 @@ export default function PlayerPage() {
         playerRef.current.destroy();
         playerRef.current = null;
       }
+      // Clear the div content if no song is to play
+      const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
+      if (playerDiv) {
+        playerDiv.innerHTML = '';
+      }
     }
     
+    // Cleanup function for when the component unmounts or dependencies change BEFORE next effect run
     return () => {
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-        playerRef.current.destroy();
+         // Check if playerRef.current is not already destroyed or null
+        try {
+            playerRef.current.destroy();
+        } catch (e) {
+            console.warn("Error destroying player on cleanup:", e);
+        }
         playerRef.current = null;
       }
     };
@@ -212,12 +238,16 @@ export default function PlayerPage() {
   };
 
   const handleSelectSongFromSearch = (song: Song) => {
-    setQueue(prevQueue => [...prevQueue, song]);
+    setQueue(prevQueue => {
+      const newQueue = [...prevQueue, song];
+      if (currentQueueIndex === -1) {
+        // If nothing was playing, start playing this song.
+        // The useEffect for currentQueueIndex will handle player initialization.
+        setCurrentQueueIndex(newQueue.length - 1);
+      }
+      return newQueue;
+    });
     
-    if (currentQueueIndex === -1) {
-      setCurrentQueueIndex(queue.length); 
-    }
-
     toast({
       title: "Added to Queue",
       description: `${song.title} by ${song.artist}`,
@@ -237,13 +267,25 @@ export default function PlayerPage() {
   };
 
   const handleStopAndClear = () => {
+    if (playerRef.current && typeof playerRef.current.stopVideo === 'function') {
+      playerRef.current.stopVideo();
+    }
+    if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+      playerRef.current.destroy();
+      playerRef.current = null;
+    }
     setCurrentQueueIndex(-1); 
+    // setQueue([]); // Optionally clear the whole queue
+    const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
+    if (playerDiv) {
+      playerDiv.innerHTML = ''; // Clear the placeholder
+    }
   };
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
 
   return (
-    <div className="flex flex-col min-h-screen bg-background">
+    <div className="flex flex-col min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-50 bg-card border-b border-border shadow-sm p-3">
         <div className="container mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -278,10 +320,10 @@ export default function PlayerPage() {
             </Alert>
           )}
           {currentPlayingSong ? (
-            <Card className="shadow-xl flex-grow flex flex-col">
+            <Card className="shadow-xl flex-grow flex flex-col bg-card">
               <CardHeader>
-                <CardTitle className="text-2xl font-semibold truncate" title={currentPlayingSong.title}>Now Playing: {currentPlayingSong.title}</CardTitle>
-                <CardDescription>{currentPlayingSong.artist}</CardDescription>
+                <CardTitle className="text-2xl font-semibold truncate text-card-foreground" title={currentPlayingSong.title}>Now Playing: {currentPlayingSong.title}</CardTitle>
+                <CardDescription className="text-muted-foreground">{currentPlayingSong.artist}</CardDescription>
               </CardHeader>
               <CardContent className="flex-grow flex items-center justify-center p-0 md:p-2">
                 <div id={PLAYER_CONTAINER_ID} className="aspect-video w-full bg-black rounded-md overflow-hidden">
@@ -302,21 +344,21 @@ export default function PlayerPage() {
               </CardFooter>
             </Card>
           ) : (
-            !apiKeyMissing && (
-              <Card className="flex-grow flex flex-col items-center justify-center p-6 text-center shadow-xl bg-card">
-                <ListMusic className="h-16 w-16 text-muted-foreground mb-4" />
-                <CardTitle className="text-2xl mb-2 text-card-foreground">Start Your Listening Party</CardTitle>
-                <CardDescription className="text-muted-foreground">Search for songs on the right and add them to your queue to begin.</CardDescription>
-              </Card>
-            )
+             <Card className="flex-grow flex flex-col items-center justify-center p-6 text-center shadow-xl bg-card">
+              <ListMusic className="h-16 w-16 text-muted-foreground mb-4" />
+              <CardTitle className="text-2xl mb-2 text-card-foreground">Start Your Listening Party</CardTitle>
+              <CardDescription className="text-muted-foreground">
+                {apiKeyMissing ? "YouTube API Key is missing. Please configure it to enable search and playback." : "Search for songs and add them to your queue to begin."}
+              </CardDescription>
+            </Card>
           )}
         </div>
 
         <div className="lg:w-1/3 flex flex-col gap-6">
-          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)]">
+          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)] bg-card">
             <CardHeader>
-              <CardTitle className="text-xl font-semibold">Search Songs</CardTitle>
-              <CardDescription>Find songs on YouTube.</CardDescription>
+              <CardTitle className="text-xl font-semibold text-card-foreground">Search Songs</CardTitle>
+              <CardDescription className="text-muted-foreground">Find songs on YouTube.</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSearch} className="flex gap-2">
@@ -333,14 +375,14 @@ export default function PlayerPage() {
           </Card>
 
           {isLoading && searchResults.length === 0 && !apiKeyMissing && (
-            <Card className="shadow-lg">
-              <CardHeader><CardTitle>Searching...</CardTitle></CardHeader>
+            <Card className="shadow-lg bg-card">
+              <CardHeader><CardTitle className="text-card-foreground">Searching...</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 {Array.from({ length: 3 }).map((_, index) => (
-                  <Card key={`skeleton-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
-                    <Skeleton className="h-[60px] w-[80px] rounded" />
-                    <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4" /> <Skeleton className="h-4 w-1/2" /></div>
-                    <Skeleton className="h-8 w-8 rounded-full" />
+                  <Card key={`skeleton-${index}`} className="flex items-center p-3 gap-3 bg-muted/50 hover:bg-muted/70">
+                    <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" />
+                    <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div>
+                    <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" />
                   </Card>
                 ))}
               </CardContent>
@@ -348,9 +390,9 @@ export default function PlayerPage() {
           )}
 
           {searchResults.length > 0 && !isLoading && !apiKeyMissing && (
-            <Card className="shadow-lg">
+            <Card className="shadow-lg bg-card">
               <CardHeader>
-                <CardTitle>Search Results</CardTitle>
+                <CardTitle className="text-card-foreground">Search Results</CardTitle>
               </CardHeader>
               <CardContent>
                 <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3">
@@ -358,7 +400,7 @@ export default function PlayerPage() {
                     {searchResults.map((song) => (
                       <Card
                         key={song.id + "-searchresult"}
-                        className="flex items-center p-3 gap-3 hover:bg-card/80 hover:shadow-md transition-all cursor-pointer bg-muted/50"
+                        className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50"
                         onClick={() => handleSelectSongFromSearch(song)}
                         tabIndex={0}
                         onKeyDown={(e) => e.key === 'Enter' && handleSelectSongFromSearch(song)}
@@ -381,9 +423,9 @@ export default function PlayerPage() {
           )}
 
           {upNextQueue.length > 0 && (
-            <Card className="shadow-lg">
+            <Card className="shadow-lg bg-card">
               <CardHeader>
-                <CardTitle>Up Next ({upNextQueue.length})</CardTitle>
+                <CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle>
               </CardHeader>
               <CardContent>
                 <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3">
@@ -391,7 +433,7 @@ export default function PlayerPage() {
                     {upNextQueue.map((song, index) => (
                       <Card
                         key={song.id + "-upnext-" + index}
-                        className="flex items-center p-2 gap-2 bg-muted/60"
+                        className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80"
                       >
                         <Image
                           src={song.thumbnailUrl}
