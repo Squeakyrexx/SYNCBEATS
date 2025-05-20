@@ -126,7 +126,6 @@ export default function PlayerPage() {
     }
     const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
     if (playerDiv && window.YT && window.YT.Player) {
-       // Clear previous player content if any, to ensure clean slate
       playerDiv.innerHTML = '';
       playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
         videoId: videoId,
@@ -234,7 +233,7 @@ export default function PlayerPage() {
   const handleSelectSongFromSearch = (song: Song) => {
     setQueue(prevQueue => {
       const newQueue = [...prevQueue, song];
-      if (currentQueueIndex === -1) {
+      if (currentQueueIndex === -1) { // If nothing is playing, start playing this song
         setCurrentQueueIndex(newQueue.length - 1);
       }
       return newQueue;
@@ -244,6 +243,8 @@ export default function PlayerPage() {
       title: "Added to Queue",
       description: `${song.title} by ${song.artist}`,
     });
+    setSearchResults([]); // Clear search results after selection
+    setSearchQuery(''); // Clear search query
   };
 
   const handleInviteFriend = () => {
@@ -300,6 +301,7 @@ export default function PlayerPage() {
       </header>
 
       <main className="container mx-auto p-4 flex-grow flex flex-col lg:flex-row gap-6">
+        {/* Left Panel: Player Area */}
         <div className="lg:w-2/3 flex flex-col">
           {apiKeyMissing && !currentPlayingSong && (
             <Alert variant="destructive" className="mb-4">
@@ -345,81 +347,97 @@ export default function PlayerPage() {
           )}
         </div>
 
-        <div className="lg:w-1/3 flex flex-col gap-6">
-          <Card className="shadow-lg sticky top-[calc(theme(spacing.16)_+_1px)] md:top-[calc(theme(spacing.20)_-_1px)] bg-card">
-            <CardHeader>
-              <CardTitle className="text-xl font-semibold text-card-foreground">Search Songs</CardTitle>
-              <CardDescription className="text-muted-foreground">Find songs on YouTube.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSearch} className="flex gap-2">
-                <Input type="search" placeholder="Search songs or artists..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="flex-grow" aria-label="Search songs" disabled={apiKeyMissing || isLoading} />
-                <Button type="submit" size="icon" aria-label="Search" disabled={apiKeyMissing || isLoading || !searchQuery.trim()}><Search className="h-5 w-5" /></Button>
-              </form>
-              {apiKeyMissing && (<Alert variant="destructive" className="mt-4"><AlertTriangle className="h-4 w-4" /><AlertTitle>API Key Missing</AlertTitle><AlertDescription>Search disabled. Set <code>NEXT_PUBLIC_YOUTUBE_API_KEY</code>.</AlertDescription></Alert>)}
-            </CardContent>
-            {(searchResults.length > 0 || isLoading) && !apiKeyMissing && (
-              <CardFooter className="text-sm text-muted-foreground pt-0">
-                {isLoading && searchResults.length === 0 ? "Searching..." : searchResults.length > 0 ? `Showing ${searchResults.length} result(s).` : ""}
-              </CardFooter>
+        {/* Right Panel: Controls & Lists */}
+        <div className="lg:w-1/3 flex flex-col gap-4">
+          {/* Search Section */}
+          <div className="space-y-4">
+            <form onSubmit={handleSearch} className="flex gap-2 items-center">
+              <Input 
+                type="search" 
+                placeholder="Search songs or artists..." 
+                value={searchQuery} 
+                onChange={(e) => setSearchQuery(e.target.value)} 
+                className="flex-grow" 
+                aria-label="Search songs" 
+                disabled={apiKeyMissing || isLoading} 
+              />
+              <Button 
+                type="submit" 
+                size="icon" 
+                aria-label="Search" 
+                disabled={apiKeyMissing || isLoading || !searchQuery.trim()}
+              >
+                <Search className="h-5 w-5" />
+              </Button>
+            </form>
+            {apiKeyMissing && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>API Key Missing</AlertTitle>
+                <AlertDescription>Search disabled. Set <code>NEXT_PUBLIC_YOUTUBE_API_KEY</code>.</AlertDescription>
+              </Alert>
             )}
-          </Card>
-
+            {(isLoading && searchResults.length === 0 && !apiKeyMissing) && (
+              <p className="text-sm text-muted-foreground text-center py-2">Searching...</p>
+            )}
+          </div>
+          
+          {/* Search Results Section */}
+          {!isLoading && searchResults.length > 0 && !apiKeyMissing && (
+            <div className="flex flex-col gap-y-1">
+              <h3 className="text-lg font-semibold text-foreground mb-2">Search Results</h3>
+              <ScrollArea className="h-[300px] max-h-[calc(100vh-550px)] pr-3 -mr-3"> {/* Negative margin to compensate for scrollbar */}
+                <div className="space-y-3">
+                  {searchResults.map((song) => (
+                    <Card
+                      key={song.id + "-searchresult"}
+                      className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50"
+                      onClick={() => handleSelectSongFromSearch(song)}
+                      tabIndex={0}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSelectSongFromSearch(song)}
+                      aria-label={`Add ${song.title} by ${song.artist} to queue`}
+                    >
+                      <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p>
+                        <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
+                      </div>
+                      <Button variant="ghost" size="icon" aria-label={`Add ${song.title} to queue`}>
+                        <PlayCircle className="h-6 w-6 text-primary" />
+                      </Button>
+                    </Card>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
+          )}
+          
           {isLoading && searchResults.length === 0 && !apiKeyMissing && (
-            <Card className="shadow-lg bg-card">
-              <CardHeader><CardTitle className="text-card-foreground">Searching...</CardTitle></CardHeader>
-              <CardContent className="space-y-3">
-                {Array.from({ length: 3 }).map((_, index) => (
-                  <Card key={`skeleton-${index}`} className="flex items-center p-3 gap-3 bg-muted/50 hover:bg-muted/70">
-                    <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" />
-                    <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div>
-                    <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" />
-                  </Card>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {searchResults.length > 0 && !isLoading && !apiKeyMissing && (
-            <Card className="shadow-lg bg-card">
-              <CardHeader>
-                <CardTitle className="text-card-foreground">Search Results</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ScrollArea className="h-[300px] max-h-[calc(100vh-500px)] pr-3">
-                  <div className="space-y-3">
-                    {searchResults.map((song) => (
-                      <Card
-                        key={song.id + "-searchresult"}
-                        className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50"
-                        onClick={() => handleSelectSongFromSearch(song)}
-                        tabIndex={0}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSelectSongFromSearch(song)}
-                        aria-label={`Add ${song.title} by ${song.artist} to queue`}
-                      >
-                        <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p>
-                          <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
-                        </div>
-                        <Button variant="ghost" size="icon" aria-label={`Add ${song.title} to queue`}>
-                          <PlayCircle className="h-6 w-6 text-primary" />
-                        </Button>
-                      </Card>
+             <div className="flex flex-col gap-y-1">
+                <h3 className="text-lg font-semibold text-foreground mb-2">Searching...</h3>
+                <ScrollArea className="h-[300px] max-h-[calc(100vh-550px)] pr-3 -mr-3">
+                    <div className="space-y-3">
+                    {Array.from({ length: 3 }).map((_, index) => (
+                    <Card key={`skeleton-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
+                        <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" />
+                        <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div>
+                        <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" />
+                    </Card>
                     ))}
-                  </div>
+                    </div>
                 </ScrollArea>
-              </CardContent>
-            </Card>
+            </div>
           )}
 
+
+          {/* Up Next Queue Section */}
           {upNextQueue.length > 0 && (
-            <Card className="shadow-lg bg-card">
+            <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0"> {/* flex-1 and min-h-0 for scrollarea flex */}
               <CardHeader>
                 <CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle>
               </CardHeader>
-              <CardContent>
-                <ScrollArea className="h-[200px] max-h-[calc(100vh-600px)] pr-3">
+              <CardContent className="flex-grow p-0 overflow-hidden"> {/* p-0 and overflow-hidden for ScrollArea */}
+                <ScrollArea className="h-full px-6 pb-6"> {/* Added padding to scroll area content */}
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card
@@ -451,4 +469,3 @@ export default function PlayerPage() {
     </div>
   );
 }
-
