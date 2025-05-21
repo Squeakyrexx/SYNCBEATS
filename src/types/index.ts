@@ -16,20 +16,33 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+// Stored on server with userId as key
+export interface ServerRoomUser {
+  username: string;
+  canAddSongs: boolean;
+  lastSeen: number;
+}
+
+// Sent to client as an array
+export interface RoomUser extends ServerRoomUser {
+  id: string; 
+}
+
 export interface RoomState {
   queue: Song[];
   currentQueueIndex: number;
   chatMessages: ChatMessage[];
   hostId?: string;
   hostUsername?: string;
-  isPlaying: boolean; // Added for play/pause sync
-  lastPlaybackChangeBy?: string; // Added to track who initiated the last play/pause
+  isPlaying: boolean;
+  lastPlaybackChangeBy?: string;
+  users: Record<string, ServerRoomUser> | RoomUser[]; // Server uses Record, client expects RoomUser[]
 }
 
 export interface User {
-  id: string; // Or a unique username
+  id: string; 
   username: string;
-  // IMPORTANT: In a real app, NEVER store plain text passwords.
-  // This is for demonstration with in-memory store only.
-  password?: string; // Should be hashed in a real DB
+  password?: string; 
 }
+
+    

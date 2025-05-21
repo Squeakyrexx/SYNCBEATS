@@ -11,14 +11,16 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle, Crown } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle, Crown, Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import type { Song, RoomState, ChatMessage } from '@/types';
+import type { Song, RoomState, ChatMessage, RoomUser } from '@/types';
 import { AuthContext } from '@/context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
+import { Label } from '@/components/ui/label';
 
 
 declare global {
@@ -31,6 +33,7 @@ declare global {
 const YOUTUBE_API_KEY = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 const PLAYER_CONTAINER_ID = 'youtube-player-container';
 const SSE_CONNECTION_TIMEOUT_MS = 15000; // 15 seconds
+const ACTIVE_USER_TIMEOUT_MS = 90 * 1000; // 90 seconds
 
 export default function PlayerPage() {
   const params = useParams();
@@ -53,12 +56,11 @@ export default function PlayerPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-
   const playerRef = useRef<any | null>(null);
   const apiLoadedRef = useRef(false);
   const [youtubeApiReady, setYoutubeApiReady] = useState(false);
   const initializingPlayerRef = useRef(false);
-  const isProgrammaticPlayPauseRef = useRef(false); // For play/pause sync
+  const isProgrammaticPlayPauseRef = useRef(false);
 
   const [suggestedSongs, setSuggestedSongs] = useState<Song[]>([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
@@ -73,14 +75,17 @@ export default function PlayerPage() {
     ? queue[currentQueueIndex]
     : null;
   const chatMessages = roomState?.chatMessages || [];
+  const roomUsers = roomState?.users || []; // Expecting RoomUser[] from server
+
   const hostId = roomState?.hostId;
   const hostUsername = roomState?.hostUsername;
   const isCurrentUserHost = !!currentUser && !!hostId && currentUser.id === hostId;
   const serverIsPlaying = roomState?.isPlaying ?? false;
 
+  const canCurrentUserAddSongs = isCurrentUserHost || !!roomUsers.find(u => u.id === currentUser?.id)?.canAddSongs;
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
-    console.log(`[PlayerPage updateServerRoomState] Called for group ${groupIdFromParams} with new state:`, newState);
+    // console.log(`[PlayerPage updateServerRoomState] Called for group ${groupIdFromParams} with new state:`, newState);
     if (!groupIdFromParams) return;
     try {
       const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
@@ -101,7 +106,7 @@ export default function PlayerPage() {
         const errorData = await response.json();
         toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
       } else {
-        console.log(`[PlayerPage updateServerRoomState] Successfully updated server for ${groupIdFromParams}`);
+        // console.log(`[PlayerPage updateServerRoomState] Successfully updated server for ${groupIdFromParams}`);
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
@@ -122,8 +127,8 @@ export default function PlayerPage() {
     setSyncError(null);
 
     console.log(`[PlayerPage] Attempting SSE connection for group: ${groupIdFromParams}`);
-    const es = new EventSource(`/api/sync/${groupIdFromParams}`);
-    eventSourceRef.current = es;
+    eventSourceRef.current = new EventSource(`/api/sync/${groupIdFromParams}`);
+    const es = eventSourceRef.current;
 
     if (sseTimeoutRef.current) {
       clearTimeout(sseTimeoutRef.current);
@@ -154,18 +159,19 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      setIsRoomLoading(false);
+      // setIsRoomLoading(false); // Don't set to false until first message with data
       setSyncError(null);
     };
 
     es.onmessage = (event) => {
-      console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "...");
+      // console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "...");
       if (sseTimeoutRef.current) {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
       try {
         const newRoomState: RoomState = JSON.parse(event.data);
+        // console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
         setRoomState(newRoomState);
         setIsRoomLoading(false); 
         setSyncError(null); 
@@ -204,7 +210,9 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  }, [groupIdFromParams]);
+  // IMPORTANT: Only re-run if groupIdFromParams changes. Other dependencies managed internally or via useCallback.
+  // eslint-disable-next-line react-hooks/exhaustive-deps 
+  }, [groupIdFromParams]); 
 
 
   useEffect(() => {
@@ -228,18 +236,18 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
-      console.log("[PlayerPage YouTube API Effect] API already loaded.");
+      // console.log("[PlayerPage YouTube API Effect] API already loaded.");
       setYoutubeApiReady(true);
       return;
     }
     if (typeof window !== 'undefined' && !apiLoadedRef.current) {
-      console.log("[PlayerPage YouTube API Effect] Loading YouTube API script.");
+      // console.log("[PlayerPage YouTube API Effect] Loading YouTube API script.");
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
       apiLoadedRef.current = true;
       window.onYouTubeIframeAPIReady = () => {
-        console.log("[PlayerPage YouTube API Effect] onYouTubeIframeAPIReady fired.");
+        // console.log("[PlayerPage YouTube API Effect] onYouTubeIframeAPIReady fired.");
         setYoutubeApiReady(true);
       };
     }
@@ -247,7 +255,7 @@ export default function PlayerPage() {
 
   const playNextSongInQueue = useCallback(() => {
     if (!isCurrentUserHost) return;
-    console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
+    // console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
        updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1, isPlaying: true, lastPlaybackChangeBy: currentUser?.id });
     } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) {
@@ -257,7 +265,8 @@ export default function PlayerPage() {
   }, [currentQueueIndex, queue, toast, updateServerRoomState, isCurrentUserHost, currentUser?.id]);
 
   const onPlayerReady = useCallback((event: any) => {
-    console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
+    // console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
+    // event.target.playVideo(); // Directly play when ready. This should help with autoplay consistency
     // Autoplay is handled by playerVars: { autoplay: 1 }
     // and serverIsPlaying state sync.
     // If a song is loaded and serverIsPlaying is true, it should play.
@@ -277,10 +286,11 @@ export default function PlayerPage() {
   }, [toast, playNextSongInQueue, isCurrentUserHost]);
 
   const onPlayerStateChange = useCallback((event: any) => {
-    console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
-    if (!window.YT || !window.YT.PlayerState) return;
+    // console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
+    if (!window.YT || !window.YT.PlayerState || !currentUser) return;
 
     if (isProgrammaticPlayPauseRef.current) {
+      // console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
         // This change was triggered by server state, so don't send update back
         // isProgrammaticPlayPauseRef.current = false; // Reset after the event is processed by the player
         // It's better to reset this when the command is issued, or ensure it only applies once.
@@ -303,21 +313,22 @@ export default function PlayerPage() {
     }
 
     if (newIsPlayingState !== undefined && newIsPlayingState !== serverIsPlaying) {
-      console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Current user: ${currentUser?.id}`);
-      updateServerRoomState({ isPlaying: newIsPlayingState, lastPlaybackChangeBy: currentUser?.id });
+      // console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Current user: ${currentUser?.id}`);
+      updateServerRoomState({ isPlaying: newIsPlayingState, lastPlaybackChangeBy: currentUser.id });
     }
-  }, [isCurrentUserHost, playNextSongInQueue, serverIsPlaying, updateServerRoomState, currentUser?.id]);
+  }, [isCurrentUserHost, playNextSongInQueue, serverIsPlaying, updateServerRoomState, currentUser]);
 
   const initializePlayer = useCallback((videoId: string) => {
     if (!youtubeApiReady || initializingPlayerRef.current) {
-      console.log(`[PlayerPage InitializePlayer] Skipped. youtubeApiReady: ${youtubeApiReady}, initializingPlayerRef: ${initializingPlayerRef.current}`);
+      // console.log(`[PlayerPage InitializePlayer] Skipped. youtubeApiReady: ${youtubeApiReady}, initializingPlayerRef: ${initializingPlayerRef.current}`);
+      if (!youtubeApiReady) console.warn("[PlayerPage InitializePlayer] YouTube API not ready.");
       return;
     }
     initializingPlayerRef.current = true;
-    console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
+    // console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
 
     if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-      console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
+      // console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
       playerRef.current.destroy();
       playerRef.current = null;
     }
@@ -330,7 +341,7 @@ export default function PlayerPage() {
           playerVars: { autoplay: 1, enablejsapi: 1, controls: 1, modestbranding: 1, rel: 0 },
           events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange, 'onError': onPlayerError },
         });
-        console.log("[PlayerPage InitializePlayer] New player instance created.");
+        // console.log("[PlayerPage InitializePlayer] New player instance created.");
       } catch (e) {
         console.error("[PlayerPage InitializePlayer] Error creating YouTube player:", e);
         toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
@@ -346,10 +357,10 @@ export default function PlayerPage() {
 
   // Effect to manage player based on currentPlayingSong
   useEffect(() => {
-    console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
+    // console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
       if(playerRef.current && typeof playerRef.current.destroy === 'function' && !currentPlayingSong) {
-        console.log("[PlayerPage PlayerEffect] No current song and room not ready/loading, destroying player.");
+        // console.log("[PlayerPage PlayerEffect] No current song and room not ready/loading, destroying player.");
         playerRef.current.destroy();
         playerRef.current = null;
         const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
@@ -361,13 +372,13 @@ export default function PlayerPage() {
     if (currentPlayingSong) {
       const currentVideoIdInPlayer = playerRef.current?.getVideoData?.()?.video_id;
       if (currentVideoIdInPlayer !== currentPlayingSong.id) {
-        console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
+        // console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
         initializePlayer(currentPlayingSong.id);
       } else {
-         console.log(`[PlayerPage PlayerEffect] Song ${currentPlayingSong.title} already loaded in player.`);
+         // console.log(`[PlayerPage PlayerEffect] Song ${currentPlayingSong.title} already loaded in player.`);
       }
     } else {
-      console.log("[PlayerPage PlayerEffect] No current playing song. Destroying player if exists.");
+      // console.log("[PlayerPage PlayerEffect] No current playing song. Destroying player if exists.");
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
@@ -384,35 +395,32 @@ export default function PlayerPage() {
 
   // Effect to sync local player's play/pause state with server's isPlaying state
   useEffect(() => {
-    if (!playerRef.current || !playerRef.current.getPlayerState || !roomState || !currentUser) return;
+    if (!playerRef.current || !playerRef.current.getPlayerState || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) return;
     
-    console.log(`[PlayerPage PlaySyncEffect] serverIsPlaying: ${serverIsPlaying}, lastPlaybackChangeBy: ${roomState.lastPlaybackChangeBy}, currentUser: ${currentUser.id}`);
+    // console.log(`[PlayerPage PlaySyncEffect] serverIsPlaying: ${serverIsPlaying}, lastPlaybackChangeBy: ${roomState.lastPlaybackChangeBy}, currentUser: ${currentUser.id}`);
 
     if (roomState.lastPlaybackChangeBy === currentUser.id) {
-      console.log("[PlayerPage PlaySyncEffect] Change initiated by current user, skipping player command.");
+      // console.log("[PlayerPage PlaySyncEffect] Change initiated by current user, skipping player command.");
       return; // Don't act on changes initiated by this client
     }
 
     const localPlayerState = playerRef.current.getPlayerState();
     
-    isProgrammaticPlayPauseRef.current = true; // Set flag before commanding player
+    isProgrammaticPlayPauseRef.current = true; 
 
     if (serverIsPlaying && localPlayerState !== window.YT.PlayerState.PLAYING && localPlayerState !== window.YT.PlayerState.BUFFERING) {
-      console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
+      // console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
       playerRef.current.playVideo();
     } else if (!serverIsPlaying && localPlayerState === window.YT.PlayerState.PLAYING) {
-      console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
+      // console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
       playerRef.current.pauseVideo();
     } else {
-       console.log("[PlayerPage PlaySyncEffect] No playback command needed. Local/Server state aligned or change was local.");
+      //  console.log("[PlayerPage PlaySyncEffect] No playback command needed. Local/Server state aligned or change was local.");
     }
     
-    // Reset the flag after a short delay to ensure onPlayerStateChange processes it
-    // This is a common pattern but can be tricky. A more robust way might involve
-    // a sequence number or more complex state management if this becomes unreliable.
     const timer = setTimeout(() => {
         isProgrammaticPlayPauseRef.current = false;
-    }, 100); // Adjust delay if needed, ensures onStateChange fires first
+    }, 150); 
 
     return () => clearTimeout(timer);
 
@@ -469,7 +477,7 @@ export default function PlayerPage() {
     setIsLoadingSuggestions(true); setSuggestedSongs([]);
 
     let suggestionQuery = songForSuggestions.artist; 
-    console.log("[PlayerPage handleFetchSuggestions] Fetching details for suggestion base song:", songForSuggestions.title);
+    // console.log("[PlayerPage handleFetchSuggestions] Fetching details for suggestion base song:", songForSuggestions.title);
 
     try {
       const videoDetailsResponse = await fetch(
@@ -503,7 +511,7 @@ export default function PlayerPage() {
       } else {
          console.warn("[PlayerPage handleFetchSuggestions] Failed to fetch video details for genre hint. Status:", videoDetailsResponse.status);
       }
-      console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
+      // console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -543,6 +551,10 @@ export default function PlayerPage() {
         toast({title: "Login Required", description: "Please log in to add songs to the queue.", variant: "destructive"});
         return;
     }
+     if (!canCurrentUserAddSongs) {
+      toast({ title: "Permission Denied", description: "You do not have permission to add songs to the queue.", variant: "destructive" });
+      return;
+    }
     if (!song.id || !song.artist || !song.channelId) {
       toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID.", variant: "destructive" });
       console.warn("[PlayerPage handleSelectSong] Attempted to add song with incomplete data:", song);
@@ -554,16 +566,16 @@ export default function PlayerPage() {
 
     if (currentQueueIndex === -1 || queue.length === 0) {
       newIndex = newQueue.length - 1; 
-      shouldStartPlaying = true; // Will start playing this newly added song
-      console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
+      shouldStartPlaying = true; 
+      // console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
     } else {
-      console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentQueueIndex}. New song: ${song.title} added.`);
+      // console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentQueueIndex}. New song: ${song.title} added.`);
     }
 
     updateServerRoomState({ 
         queue: newQueue, 
         currentQueueIndex: newIndex,
-        isPlaying: shouldStartPlaying ? true : serverIsPlaying, // If starting, set to true, else maintain current server state
+        isPlaying: shouldStartPlaying ? true : serverIsPlaying, 
         lastPlaybackChangeBy: shouldStartPlaying ? currentUser.id : roomState?.lastPlaybackChangeBy
     });
 
@@ -605,7 +617,7 @@ export default function PlayerPage() {
       toast({ title: "Action Denied", description: "Only the host can stop the player and clear the queue.", variant: "destructive" });
       return;
     }
-    console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
+    // console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
     updateServerRoomState({ queue: [], currentQueueIndex: -1, isPlaying: false, lastPlaybackChangeBy: currentUser?.id });
     setSuggestedSongs([]); 
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
@@ -616,7 +628,7 @@ export default function PlayerPage() {
       toast({ title: "Action Denied", description: "Only the host can skip songs.", variant: "destructive" });
       return;
     }
-    console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
+    // console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
       updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1, isPlaying: true, lastPlaybackChangeBy: currentUser?.id });
     } else {
@@ -656,7 +668,45 @@ export default function PlayerPage() {
     }
   };
 
+  const handleToggleSongPermission = async (targetUserId: string, newPermission: boolean) => {
+    if (!isCurrentUserHost || !currentUser) {
+      toast({ title: "Permission Denied", description: "Only the host can change song permissions.", variant: "destructive" });
+      return;
+    }
+    // console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
+    try {
+      const response = await fetch(`/api/sync/${groupIdFromParams}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'UPDATE_USER_PERMISSION',
+          userId: currentUser.id, // For host verification on server
+          username: currentUser.username,
+          payload: {
+            targetUserId: targetUserId,
+            canAddSongs: newPermission,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        toast({ title: "Permission Error", description: errorData.error || "Failed to update user permission.", variant: "destructive" });
+      } else {
+        toast({ title: "Permissions Updated", description: `Song adding permission for user ${roomUsers.find(u=>u.id === targetUserId)?.username || targetUserId} set to ${newPermission ? 'allowed' : 'disallowed'}.` });
+      }
+    } catch (error) {
+      toast({ title: "Network Error", description: "Failed to update user permission.", variant: "destructive" });
+      console.error("Error updating user permission:", error);
+    }
+  };
+
   const upNextQueue = queue.slice(currentQueueIndex + 1);
+  
+  // TEMPORARY: Filter active users for display. Re-enable if needed later.
+  // const isUserActive = (user: RoomUser) => (Date.now() - user.lastSeen) < ACTIVE_USER_TIMEOUT_MS;
+  // const activeUsers = roomUsers.filter(isUserActive);
+  // console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
+  const activeUsers = roomUsers; // Display all users for now for debugging
 
   if (isRoomLoading) {
     return (
@@ -683,6 +733,8 @@ export default function PlayerPage() {
   }
 
   const hostControlTooltip = (action: string) => isCurrentUserHost ? "" : `Only the host can ${action}.`;
+  const addSongPermissionTooltip = "You do not have permission to add songs.";
+
 
   return (
     <TooltipProvider>
@@ -746,10 +798,10 @@ export default function PlayerPage() {
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
                   <div className="flex w-full justify-center space-x-2">
-                    <Tooltip>
+                     <Tooltip>
                         <TooltipTrigger asChild>
-                            <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
-                                <ListMusic /> <span className="ml-2">Stop & Clear</span>
+                           <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
+                                <ListMusic /> <span className="ml-1">Stop & Clear</span>
                             </Button>
                         </TooltipTrigger>
                         {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("stop player and clear queue")}</p></TooltipContent>}
@@ -757,8 +809,8 @@ export default function PlayerPage() {
                     {upNextQueue.length > 0 && (
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <Button variant="secondary" onClick={handleSkipToNext} disabled={!isCurrentUserHost}>
-                                    <SkipForward /> <span className="ml-2">Skip</span>
+                               <Button variant="secondary" onClick={handleSkipToNext} disabled={!isCurrentUserHost}>
+                                    <SkipForward /> <span className="ml-1">Skip</span>
                                 </Button>
                             </TooltipTrigger>
                             {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("skip songs")}</p></TooltipContent>}
@@ -774,6 +826,9 @@ export default function PlayerPage() {
                 <CardDescription className="text-muted-foreground">
                     {apiKeyMissing ? "YouTube API Key is missing. Playback disabled." : "Search and add songs to begin."}
                 </CardDescription>
+                 {!canCurrentUserAddSongs && !apiKeyMissing && (
+                    <p className="text-xs text-accent mt-2">Waiting for host to grant permission to add songs.</p>
+                )}
               </Card>
             )}
           </div>
@@ -800,7 +855,7 @@ export default function PlayerPage() {
           )}
         </div>
 
-        {/* Right Panel: Search, Suggestions & Chat */}
+        {/* Right Panel: Search, Suggestions, Participants & Chat */}
         <div className="lg:w-1/3 flex flex-col gap-4">
             <Card className="shadow-lg bg-card p-4 space-y-3">
                 <h3 className="text-xl font-semibold text-foreground">Search Songs</h3>
@@ -815,6 +870,9 @@ export default function PlayerPage() {
                         <AlertDescription>Search functionality is disabled.</AlertDescription>
                     </Alert>
                 )}
+                 {!canCurrentUserAddSongs && !apiKeyMissing && !isSearchLoading && (
+                    <p className="text-xs text-accent text-center mt-1">You don&apos;t have permission to add songs.</p>
+                )}
             </Card>
 
           {(isSearchLoading || searchResults.length > 0) && !apiKeyMissing && (
@@ -824,7 +882,26 @@ export default function PlayerPage() {
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-3">
                     {isSearchLoading && searchResults.length === 0 && Array.from({ length: 3 }).map((_, index) => ( <Card key={`skeleton-search-${index}`} className="flex items-center p-3 gap-3 bg-muted/50"> <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" /> <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div> <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" /> </Card>))}
-                    {!isSearchLoading && searchResults.map((song) => ( <Card key={song.id + "-searchresult"} className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50" onClick={() => handleSelectSong(song)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}> <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} /> <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div> <Button variant="ghost" size="icon"><PlayCircle className="text-primary"/></Button> </Card> ))}
+                    {!isSearchLoading && searchResults.map((song) => (
+                        <Tooltip key={song.id + "-searchresult-tooltip"} delayDuration={canCurrentUserAddSongs ? 500 : 0}>
+                            <TooltipTrigger asChild>
+                                <Card 
+                                    className={`flex items-center p-3 gap-3 transition-all bg-muted/50 ${canCurrentUserAddSongs ? 'hover:bg-muted/70 hover:shadow-md cursor-pointer' : 'opacity-70 cursor-not-allowed'}`}
+                                    onClick={() => canCurrentUserAddSongs && handleSelectSong(song)} 
+                                    tabIndex={canCurrentUserAddSongs ? 0 : -1} 
+                                    onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
+                                    aria-disabled={!canCurrentUserAddSongs}
+                                >
+                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                                    <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div>
+                                    <Button variant="ghost" size="icon" disabled={!canCurrentUserAddSongs} className={`${!canCurrentUserAddSongs && 'pointer-events-none'}`}>
+                                        <PlayCircle className={canCurrentUserAddSongs ? "text-primary" : "text-muted-foreground"}/>
+                                    </Button>
+                                </Card>
+                            </TooltipTrigger>
+                            {!canCurrentUserAddSongs && <TooltipContent><p>{addSongPermissionTooltip}</p></TooltipContent>}
+                        </Tooltip>
+                    ))}
                   </div>
                 </ScrollArea>
               </CardContent>
@@ -838,7 +915,26 @@ export default function PlayerPage() {
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-3">
                     {isLoadingSuggestions && Array.from({ length: 2 }).map((_, index) => ( <Card key={`skeleton-suggest-${index}`} className="flex items-center p-3 gap-3 bg-muted/50"> <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" /> <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div> <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" /> </Card>))}
-                    {!isLoadingSuggestions && suggestedSongs.map((song) => ( <Card key={song.id + "-suggestion"} className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50" onClick={() => handleSelectSong(song)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}> <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} /> <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div> <Button variant="ghost" size="icon"><PlayCircle className="text-primary"/></Button> </Card>))}
+                    {!isLoadingSuggestions && suggestedSongs.map((song) => (
+                         <Tooltip key={song.id + "-suggestion-tooltip"} delayDuration={canCurrentUserAddSongs ? 500 : 0}>
+                            <TooltipTrigger asChild>
+                                <Card 
+                                    className={`flex items-center p-3 gap-3 transition-all bg-muted/50 ${canCurrentUserAddSongs ? 'hover:bg-muted/70 hover:shadow-md cursor-pointer' : 'opacity-70 cursor-not-allowed'}`}
+                                    onClick={() => canCurrentUserAddSongs && handleSelectSong(song)} 
+                                    tabIndex={canCurrentUserAddSongs ? 0 : -1} 
+                                    onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
+                                    aria-disabled={!canCurrentUserAddSongs}
+                                >
+                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                                    <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div>
+                                    <Button variant="ghost" size="icon" disabled={!canCurrentUserAddSongs} className={`${!canCurrentUserAddSongs && 'pointer-events-none'}`}>
+                                        <PlayCircle className={canCurrentUserAddSongs ? "text-primary" : "text-muted-foreground"}/>
+                                    </Button>
+                                </Card>
+                            </TooltipTrigger>
+                            {!canCurrentUserAddSongs && <TooltipContent><p>{addSongPermissionTooltip}</p></TooltipContent>}
+                        </Tooltip>
+                    ))}
                     {!isLoadingSuggestions && suggestedSongs.length === 0 && queue.length > 0 && ( <div className="text-center py-4 text-muted-foreground"> <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> <p className="text-sm">No new suggestions for this artist/genre.</p> <p className="text-xs">Try adding a different song to the queue.</p> </div> )}
                   </div>
                 </ScrollArea>
@@ -851,6 +947,45 @@ export default function PlayerPage() {
                 <p className="text-sm">Add songs to the queue to see suggestions.</p>
             </Card>
           )}
+
+            <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
+                <CardHeader>
+                    <CardTitle className="text-card-foreground flex items-center gap-2">
+                        <Users className="text-primary" /> Participants ({activeUsers.length})
+                    </CardTitle>
+                </CardHeader>
+                <CardContent className="flex-grow p-0 overflow-hidden">
+                    <ScrollArea className="h-full max-h-[200px] px-4 pb-2">
+                        <div className="space-y-3 py-2">
+                            {activeUsers.length === 0 && (
+                                <p className="text-sm text-muted-foreground text-center py-4">No other participants currently active.</p>
+                            )}
+                            {activeUsers.map((user) => (
+                                <div key={user.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-md hover:bg-muted/70">
+                                    <div className="flex items-center gap-2">
+                                        {user.id === hostId && <Crown className="h-4 w-4 text-amber-400" />}
+                                        <span className={`text-sm font-medium ${user.id === hostId ? 'text-amber-400' : 'text-foreground'}`}>
+                                            {user.username} {currentUser?.id === user.id && "(You)"}
+                                        </span>
+                                    </div>
+                                    {isCurrentUserHost && currentUser?.id !== user.id && (
+                                        <div className="flex items-center space-x-2">
+                                            <Label htmlFor={`permission-${user.id}`} className="text-xs text-muted-foreground cursor-pointer">Add Songs:</Label>
+                                            <Switch
+                                                id={`permission-${user.id}`}
+                                                checked={user.canAddSongs}
+                                                onCheckedChange={(checked) => handleToggleSongPermission(user.id, checked)}
+                                                aria-label={`Toggle song adding permission for ${user.username}`}
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </ScrollArea>
+                </CardContent>
+            </Card>
+
 
           <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
             <CardHeader>
@@ -867,7 +1002,7 @@ export default function PlayerPage() {
                   {chatMessages.map((chat) => (
                     <div key={chat.id} className="text-sm">
                       <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1 text-amber-400" />}
-                        {chat.username}: </span>
+                        {chat.username}{currentUser?.id === chat.userId && " (You)"}: </span>
                       <span className="text-foreground break-words">{chat.message}</span>
                       <p className="text-xs text-muted-foreground/70 mt-0.5">
                         {formatDistanceToNow(new Date(chat.timestamp), { addSuffix: true })}
@@ -900,3 +1035,5 @@ export default function PlayerPage() {
     </TooltipProvider>
   );
 }
+
+    
