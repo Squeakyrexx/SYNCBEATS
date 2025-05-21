@@ -36,7 +36,15 @@ export async function GET(
         
         const keepAliveInterval = setInterval(() => {
           try {
-            controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
+            // Check if the client is still connected or wants data
+            if (controller.desiredSize === null || controller.desiredSize > 0) {
+              controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
+            } else {
+              // Client likely disconnected or stream closed
+              clearInterval(keepAliveInterval);
+              removeSSEClient(groupId, controller);
+              // Controller is likely already closed or in the process of closing
+            }
           } catch (e) {
             // console.error(`Error sending SSE keep-alive for ${groupId}:`, e);
             clearInterval(keepAliveInterval);
@@ -49,17 +57,33 @@ export async function GET(
         request.signal.addEventListener('abort', () => {
           clearInterval(keepAliveInterval);
           removeSSEClient(groupId, controller);
+          try { controller.close(); } catch { /* ignore */ }
         });
       } catch (e) {
-        console.error(`Error during SSE stream setup or initial send for ${groupId}:`, e);
+        console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, e);
         removeSSEClient(groupId, controller);
-        try { controller.close(); } catch { /* ignore */ }
-        // No return here, just ensure controller is closed.
+        try {
+          // Try to signal an error on the stream before closing.
+          // This might help client's EventSource.onerror to fire.
+          if (controller.desiredSize !== null) { // Check if controller is still active
+             controller.error(e instanceof Error ? e : new Error(String(e)));
+          }
+        } catch (errSignalError) {
+            // console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
+        }
+        try { 
+          if (controller.desiredSize !== null) { // Check if controller is still active
+            controller.close(); 
+          }
+        } catch (closeErr) {
+            // console.error(`[SSE /api/sync/${groupId}] Error closing controller after critical error:`, closeErr);
+        }
       }
     },
     cancel(_reason) {
       // console.log(`SSE Stream cancelled for group ${groupId}. Reason:`, reason);
-      // Client disconnected, controller might already be closed or will be by abort listener.
+      // Cleanup is primarily handled by the 'abort' event on request.signal
+      // as 'controller' isn't directly accessible here in a straightforward way for removal.
     }
   });
 
@@ -102,9 +126,6 @@ export async function POST(
         return NextResponse.json({ error: 'Missing message, userId, or username for CHAT_MESSAGE' }, { status: 400 });
       }
       
-      const currentRoom = getRoomState(groupId) || initializeRoom(groupId);
-      // MAX_CHAT_MESSAGES is handled by addChatMessageToRoom
-
       const newChatMessage: ChatMessage = {
         id: crypto.randomUUID(),
         userId,
@@ -117,7 +138,8 @@ export async function POST(
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
-        return NextResponse.json({ error: 'Failed to add chat message' }, { status: 500 });
+        // This case should ideally not be reached if addChatMessageToRoom always returns a RoomState or throws
+        return NextResponse.json({ error: 'Failed to add chat message or room not found' }, { status: 500 });
       }
     } else {
       return NextResponse.json({ error: 'Invalid request type' }, { status: 400 });
@@ -125,6 +147,10 @@ export async function POST(
 
   } catch (error) {
     console.error(`Error processing POST for group ${groupId}:`, error);
+    // Check if error is a SyntaxError (likely from request.json())
+    if (error instanceof SyntaxError) {
+        return NextResponse.json({ error: 'Invalid JSON in request body' }, { status: 400 });
+    }
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
