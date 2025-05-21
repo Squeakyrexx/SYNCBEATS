@@ -39,7 +39,6 @@ export default function PlayerPage() {
   const [copiedInvite, setCopiedInvite] = useState(false);
   const [apiKeyMissing, setApiKeyMissing] = useState(!YOUTUBE_API_KEY);
 
-  // Synced state (from in-memory store via SSE)
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [isRoomLoading, setIsRoomLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -60,7 +59,6 @@ export default function PlayerPage() {
     ? queue[currentQueueIndex]
     : null;
 
-  // Function to update server state
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
     if (!groupId) return;
     try {
@@ -73,7 +71,6 @@ export default function PlayerPage() {
         const errorData = await response.json();
         toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
       }
-      // State will be updated via SSE, no need to set it locally here
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
       console.error("Error updating server room state:", error);
@@ -100,7 +97,7 @@ export default function PlayerPage() {
         setIsRoomLoading(false); 
       } catch (error) {
         console.error("Error parsing SSE message:", error);
-        toast({ title: "Sync Error", description: "Received invalid data from server.", variant: "destructive" });
+        // toast({ title: "Sync Error", description: "Received invalid data from server.", variant: "destructive" });
       }
     };
 
@@ -156,13 +153,13 @@ export default function PlayerPage() {
       updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
     } else {
       toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
-      updateServerRoomState({ currentQueueIndex: -1 }); // Signal end of queue
+      updateServerRoomState({ currentQueueIndex: -1 }); 
     }
   }, [currentQueueIndex, queue, toast, updateServerRoomState]);
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
-       event.target.playVideo(); // Explicitly play when ready
+       event.target.playVideo();
     }
   }, []);
 
@@ -214,7 +211,7 @@ export default function PlayerPage() {
     if (!youtubeApiReady || isRoomLoading || !roomState) return;
 
     if (currentPlayingSong) {
-      if (!playerRef.current || (playerRef.current.getVideoData && playerRef.current.getVideoData().video_id !== currentPlayingSong.id)) {
+       if (!playerRef.current || (playerRef.current.getVideoData && playerRef.current.getVideoData().video_id !== currentPlayingSong.id)) {
         initializePlayer(currentPlayingSong.id);
       }
     } else { 
@@ -245,7 +242,10 @@ export default function PlayerPage() {
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
       );
       if (!response.ok) { 
-        toast({ title: "Search Error", description: `API request failed: ${response.statusText}`, variant: "destructive"});
+        const errorData = await response.json().catch(() => ({})); // Try to get more details from body
+        const description = `API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || 'Check console for more details.'}`;
+        toast({ title: "Search Error", description, variant: "destructive", duration: 7000});
+        console.error("Search API error details:", errorData);
         setIsSearchLoading(false); 
         return; 
       }
@@ -270,7 +270,7 @@ export default function PlayerPage() {
         setSuggestedSongs([]);
         if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist)) {
             console.warn("Cannot fetch suggestions: songForSuggestions is missing id, channelId, or artist.", songForSuggestions);
-            if (YOUTUBE_API_KEY) { // Only toast if API key is present, otherwise the API key missing toast is primary
+            if (YOUTUBE_API_KEY) {
               toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
             }
         }
@@ -278,10 +278,9 @@ export default function PlayerPage() {
     }
     setIsLoadingSuggestions(true); setSuggestedSongs([]);
     
-    let suggestionQuery = songForSuggestions.artist; // Default query
+    let suggestionQuery = songForSuggestions.artist;
 
     try {
-      // Attempt to get genre clues from video details
       const videoDetailsResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${songForSuggestions.id}&key=${YOUTUBE_API_KEY}`
       );
@@ -301,7 +300,6 @@ export default function PlayerPage() {
             }
           }
           if (!genreHint && details.snippet && details.snippet.tags) {
-            // Fallback: look for common genre keywords in tags
             const commonGenres = ["pop", "rock", "hip hop", "electronic", "jazz", "classical", "r&b", "country", "folk", "metal", "reggae"];
             const foundGenreTag = details.snippet.tags.find((tag: string) => commonGenres.some(g => tag.toLowerCase().includes(g)));
             if (foundGenreTag) genreHint = foundGenreTag;
@@ -311,16 +309,19 @@ export default function PlayerPage() {
           }
         }
       } else {
-        console.warn(`Failed to fetch video details for suggestions (song ID: ${songForSuggestions.id}). Status: ${videoDetailsResponse.status}`);
-        // Fallback to artist only if details fetch fails
+        console.warn(`Failed to fetch video details for suggestions (song ID: ${songForSuggestions.id}). Status: ${videoDetailsResponse.status} ${videoDetailsResponse.statusText}`);
       }
       
+      console.log("Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
 
       if (!searchResponse.ok) {
-        toast({ title: "Suggestion Error", description: `API request failed: ${searchResponse.statusText}`, variant: "destructive"});
+        const errorData = await searchResponse.json().catch(() => ({}));
+        const description = `API request failed: ${searchResponse.status} ${searchResponse.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
+        toast({ title: "Suggestion Error", description, variant: "destructive", duration: 7000});
+        console.error("Suggestion API error details:", errorData);
         setIsLoadingSuggestions(false); return;
       }
       const data = await searchResponse.json(); const items = data.items || [];
@@ -353,16 +354,16 @@ export default function PlayerPage() {
     }
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
-    if (currentQueueIndex === -1 && newQueue.length === 1) { // Play if queue was empty and this is the very first song
-      newIndex = 0; 
-    } else if (currentQueueIndex === -1 && newQueue.length > 1) { // If queue was empty but multiple songs added quickly (e.g. by host)
-      newIndex = 0; // Still start from the first actual song
-    }
 
+    if (currentQueueIndex === -1 || newQueue.length === 1) {
+      newIndex = 0; 
+    }
+    
     updateServerRoomState({ queue: newQueue, currentQueueIndex: newIndex });
     
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
-    setSearchResults([]); setSearchQuery(''); // Clear search after selection
+    setSearchResults([]); 
+    setSearchQuery(''); 
 
     if (song.id && song.artist && song.channelId) {
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
@@ -394,7 +395,7 @@ export default function PlayerPage() {
 
   const handleStopAndClear = () => {
     updateServerRoomState({ queue: [], currentQueueIndex: -1 });
-    setSuggestedSongs([]); // Also clear suggestions
+    setSuggestedSongs([]); 
     toast({ title: "Player Stopped", description: "Queue cleared." });
   };
 
@@ -580,5 +581,7 @@ export default function PlayerPage() {
     </div>
   );
 }
+
+    
 
     
