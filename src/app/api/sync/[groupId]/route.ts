@@ -24,41 +24,42 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
-      addSSEClient(groupId, controller);
-      
-      let currentRoomState = getRoomState(groupId);
-      if (!currentRoomState) {
-        currentRoomState = initializeRoom(groupId);
-      }
-      const initialData = `data: ${JSON.stringify(currentRoomState)}\n\n`;
       try {
+        addSSEClient(groupId, controller);
+        
+        let currentRoomState = getRoomState(groupId);
+        if (!currentRoomState) {
+          currentRoomState = initializeRoom(groupId);
+        }
+        const initialData = `data: ${JSON.stringify(currentRoomState)}\n\n`;
         controller.enqueue(new TextEncoder().encode(initialData));
-      } catch (e) {
-        console.error(`Error sending initial SSE data for ${groupId}:`, e);
-        removeSSEClient(groupId, controller);
-        try { controller.close(); } catch { /* ignore */ }
-        return;
-      }
-      
-      const keepAliveInterval = setInterval(() => {
-        try {
-          controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
-        } catch (e) {
-          console.error(`Error sending SSE keep-alive for ${groupId}:`, e);
+        
+        const keepAliveInterval = setInterval(() => {
+          try {
+            controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
+          } catch (e) {
+            // console.error(`Error sending SSE keep-alive for ${groupId}:`, e);
+            clearInterval(keepAliveInterval);
+            removeSSEClient(groupId, controller);
+            try { controller.close(); } catch { /* ignore */ }
+          }
+        }, 25000); 
+
+
+        request.signal.addEventListener('abort', () => {
           clearInterval(keepAliveInterval);
           removeSSEClient(groupId, controller);
-          try { controller.close(); } catch { /* ignore */ }
-        }
-      }, 25000); 
-
-
-      request.signal.addEventListener('abort', () => {
-        clearInterval(keepAliveInterval);
+        });
+      } catch (e) {
+        console.error(`Error during SSE stream setup or initial send for ${groupId}:`, e);
         removeSSEClient(groupId, controller);
-      });
+        try { controller.close(); } catch { /* ignore */ }
+        // No return here, just ensure controller is closed.
+      }
     },
-    cancel(reason) {
+    cancel(_reason) {
       // console.log(`SSE Stream cancelled for group ${groupId}. Reason:`, reason);
+      // Client disconnected, controller might already be closed or will be by abort listener.
     }
   });
 
@@ -75,8 +76,8 @@ export async function GET(
 interface PostBody {
   type: 'STATE_UPDATE' | 'CHAT_MESSAGE';
   payload: any; 
-  userId?: string; // For identifying the acting user, potentially for host assignment
-  username?: string; // For identifying the acting user
+  userId?: string; 
+  username?: string; 
 }
 
 export async function POST(
@@ -93,7 +94,6 @@ export async function POST(
     // console.log(`POST request for group ${groupId} with body:`, body);
 
     if (body.type === 'STATE_UPDATE') {
-      // Pass acting user's ID and username if provided in the body
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
       return NextResponse.json(updatedRoom, { status: 200 });
     } else if (body.type === 'CHAT_MESSAGE') {
@@ -103,9 +103,7 @@ export async function POST(
       }
       
       const currentRoom = getRoomState(groupId) || initializeRoom(groupId);
-      if (currentRoom.chatMessages.length >= MAX_CHAT_MESSAGES && MAX_CHAT_MESSAGES > 0) {
-        // Older messages are pruned by addChatMessageToRoom
-      }
+      // MAX_CHAT_MESSAGES is handled by addChatMessageToRoom
 
       const newChatMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -115,7 +113,6 @@ export async function POST(
         timestamp: Date.now(),
       };
       
-      // addChatMessageToRoom will handle updating and broadcasting, including host assignment logic
       const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage);
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
