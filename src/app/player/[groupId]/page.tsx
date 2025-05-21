@@ -11,13 +11,14 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle, Crown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import type { Song, RoomState, ChatMessage } from '@/types';
 import { AuthContext } from '@/context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 
 declare global {
@@ -36,7 +37,7 @@ export default function PlayerPage() {
   const groupId = params.groupId as string;
   const { toast } = useToast();
   const authContext = useContext(AuthContext);
-  const user = authContext?.user;
+  const currentUser = authContext?.user; // Renamed for clarity
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -67,14 +68,27 @@ export default function PlayerPage() {
     ? queue[currentQueueIndex]
     : null;
   const chatMessages = roomState?.chatMessages || [];
+  const hostId = roomState?.hostId;
+  const hostUsername = roomState?.hostUsername;
+  const isCurrentUserHost = currentUser?.id === hostId;
+
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
     if (!groupId) return;
     try {
+      const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
+        type: 'STATE_UPDATE',
+        payload: newState,
+      };
+      if (currentUser) {
+        requestBody.userId = currentUser.id;
+        requestBody.username = currentUser.username;
+      }
+
       const response = await fetch(`/api/sync/${groupId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'STATE_UPDATE', payload: newState }),
+        body: JSON.stringify(requestBody),
       });
       if (!response.ok) {
         const errorData = await response.json();
@@ -84,7 +98,7 @@ export default function PlayerPage() {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
       console.error("Error updating server room state:", error);
     }
-  }, [groupId, toast]);
+  }, [groupId, toast, currentUser]);
   
   useEffect(() => {
     if (!groupId) return;
@@ -164,12 +178,19 @@ export default function PlayerPage() {
 
   const playNextSongInQueue = useCallback(() => {
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
-      updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
+      if (currentUser?.id === hostId) { // Only host can advance queue state
+        updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
+      } else {
+        // If not host, player just stops. Host needs to advance.
+        // This behavior might need refinement if non-hosts should see player stop.
+      }
     } else {
-      toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
-      updateServerRoomState({ currentQueueIndex: -1 }); 
+      if (currentUser?.id === hostId) {
+         toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
+         updateServerRoomState({ currentQueueIndex: -1 }); 
+      }
     }
-  }, [currentQueueIndex, queue, toast, updateServerRoomState]);
+  }, [currentQueueIndex, queue, toast, updateServerRoomState, currentUser, hostId]);
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
@@ -184,14 +205,18 @@ export default function PlayerPage() {
       description: `An error occurred (code: ${event.data}). Skipping if possible.`,
       variant: "destructive",
     });
-    playNextSongInQueue();
-  }, [toast, playNextSongInQueue]);
+    if (currentUser?.id === hostId) { // Only host can trigger next song on error
+        playNextSongInQueue();
+    }
+  }, [toast, playNextSongInQueue, currentUser, hostId]);
 
   const onPlayerStateChange = useCallback((event: any) => {
     if (window.YT && window.YT.PlayerState && event.data === window.YT.PlayerState.ENDED) {
-      playNextSongInQueue();
+      if (currentUser?.id === hostId) { // Only host triggers next song on end
+        playNextSongInQueue();
+      }
     }
-  }, [playNextSongInQueue]);
+  }, [playNextSongInQueue, currentUser, hostId]);
 
   const initializePlayer = useCallback((videoId: string) => {
     if (!youtubeApiReady || initializingPlayerRef.current) return;
@@ -326,7 +351,7 @@ export default function PlayerPage() {
         console.warn(`Failed to fetch video details for suggestions (song ID: ${songForSuggestions.id}). Status: ${videoDetailsResponse.status} ${videoDetailsResponse.statusText}`);
       }
       
-      console.log("Constructed suggestion query:", suggestionQuery);
+      // console.log("Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -408,12 +433,20 @@ export default function PlayerPage() {
   };
 
   const handleStopAndClear = () => {
+    if (!isCurrentUserHost) {
+      toast({ title: "Action Denied", description: "Only the host can stop the player and clear the queue.", variant: "destructive" });
+      return;
+    }
     updateServerRoomState({ queue: [], currentQueueIndex: -1 });
     setSuggestedSongs([]); 
-    toast({ title: "Player Stopped", description: "Queue cleared." });
+    toast({ title: "Player Stopped", description: "Queue cleared by host." });
   };
 
   const handleSkipToNext = () => {
+    if (!isCurrentUserHost) {
+      toast({ title: "Action Denied", description: "Only the host can skip songs.", variant: "destructive" });
+      return;
+    }
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
       updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
     } else {
@@ -423,8 +456,8 @@ export default function PlayerPage() {
 
   const handleSendChatMessage = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!newMessage.trim() || !user) {
-      if(!user) toast({ title: "Not Logged In", description: "You must be logged in to send messages.", variant: "destructive" });
+    if (!newMessage.trim() || !currentUser) {
+      if(!currentUser) toast({ title: "Not Logged In", description: "You must be logged in to send messages.", variant: "destructive" });
       return;
     }
     try {
@@ -435,8 +468,8 @@ export default function PlayerPage() {
           type: 'CHAT_MESSAGE',
           payload: {
             message: newMessage,
-            userId: user.id,
-            username: user.username,
+            userId: currentUser.id,
+            username: currentUser.username,
           },
         }),
       });
@@ -478,13 +511,21 @@ export default function PlayerPage() {
     );
   }
 
+  const hostControlTooltip = (action: string) => isCurrentUserHost ? "" : `Only the host can ${action}.`;
+
   return (
+    <TooltipProvider>
     <div className="flex flex-col min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-50 bg-card border-b border-border shadow-sm p-3">
         <div className="container mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Logo size="small" /> <Separator orientation="vertical" className="h-6" />
             <div className="text-sm"><span className="text-muted-foreground">Group: </span><span className="font-semibold text-primary">{groupId}</span></div>
+             {hostUsername && (
+                <div className="text-xs text-muted-foreground flex items-center gap-1 ml-2">
+                    <Crown className="h-3 w-3 text-amber-400"/> Hosted by: <span className="font-semibold text-foreground">{hostUsername}</span>
+                </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={handleInviteFriend}>
@@ -524,13 +565,23 @@ export default function PlayerPage() {
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
                   <div className="flex w-full space-x-2">
-                    <Button variant="outline" onClick={handleStopAndClear} className="flex-1">
-                        <ListMusic className="mr-2 h-4 w-4"/> Stop & Clear
-                    </Button>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button variant="outline" onClick={handleStopAndClear} className="flex-1" disabled={!isCurrentUserHost}>
+                                <ListMusic className="mr-2 h-4 w-4"/> Stop & Clear
+                            </Button>
+                        </TooltipTrigger>
+                        {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("stop player and clear queue")}</p></TooltipContent>}
+                    </Tooltip>
                     {upNextQueue.length > 0 && (
-                        <Button variant="secondary" onClick={handleSkipToNext} className="flex-1">
-                            <SkipForward className="mr-2 h-4 w-4"/> Skip
-                        </Button>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button variant="secondary" onClick={handleSkipToNext} className="flex-1" disabled={!isCurrentUserHost}>
+                                    <SkipForward className="mr-2 h-4 w-4"/> Skip
+                                </Button>
+                            </TooltipTrigger>
+                            {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("skip songs")}</p></TooltipContent>}
+                        </Tooltip>
                     )}
                   </div>
                 </CardFooter>
@@ -550,7 +601,7 @@ export default function PlayerPage() {
             <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-none">
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
-                <ScrollArea className="h-full max-h-[300px] px-4 pb-4" viewportRef={chatScrollAreaRef}>
+                <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card key={song.id + "-upnext-" + index} className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80">
@@ -637,7 +688,7 @@ export default function PlayerPage() {
                   )}
                   {chatMessages.map((chat) => (
                     <div key={chat.id} className="text-sm">
-                      <span className="font-semibold text-primary">{chat.username}: </span>
+                      <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1" />}{chat.username}: </span>
                       <span className="text-foreground break-words">{chat.message}</span>
                       <p className="text-xs text-muted-foreground/70 mt-0.5">
                         {formatDistanceToNow(new Date(chat.timestamp), { addSuffix: true })}
@@ -651,13 +702,13 @@ export default function PlayerPage() {
               <form onSubmit={handleSendChatMessage} className="flex w-full gap-2">
                 <Input 
                   type="text" 
-                  placeholder={user ? "Type a message..." : "Log in to chat"}
+                  placeholder={currentUser ? "Type a message..." : "Log in to chat"}
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
                   className="flex-grow"
-                  disabled={!user || authContext?.isLoading}
+                  disabled={!currentUser || authContext?.isLoading}
                 />
-                <Button type="submit" size="icon" aria-label="Send message" disabled={!user || authContext?.isLoading || !newMessage.trim()}>
+                <Button type="submit" size="icon" aria-label="Send message" disabled={!currentUser || authContext?.isLoading || !newMessage.trim()}>
                   <Send />
                 </Button>
               </form>
@@ -667,5 +718,6 @@ export default function PlayerPage() {
         </div>
       </main>
     </div>
+    </TooltipProvider>
   );
 }

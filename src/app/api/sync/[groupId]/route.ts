@@ -25,15 +25,11 @@ export async function GET(
   const stream = new ReadableStream({
     start(controller) {
       addSSEClient(groupId, controller);
-      // console.log(`SSE Connection established for group ${groupId}`);
-
-      // Send initial state
+      
       let currentRoomState = getRoomState(groupId);
       if (!currentRoomState) {
-        // console.log(`No current state for ${groupId}, initializing.`);
         currentRoomState = initializeRoom(groupId);
       }
-      // console.log(`Sending initial state for ${groupId}:`, currentRoomState);
       const initialData = `data: ${JSON.stringify(currentRoomState)}\n\n`;
       try {
         controller.enqueue(new TextEncoder().encode(initialData));
@@ -57,7 +53,6 @@ export async function GET(
 
 
       request.signal.addEventListener('abort', () => {
-        // console.log(`SSE Client disconnected (aborted) for group ${groupId}`);
         clearInterval(keepAliveInterval);
         removeSSEClient(groupId, controller);
       });
@@ -80,6 +75,8 @@ export async function GET(
 interface PostBody {
   type: 'STATE_UPDATE' | 'CHAT_MESSAGE';
   payload: any; 
+  userId?: string; // For identifying the acting user, potentially for host assignment
+  username?: string; // For identifying the acting user
 }
 
 export async function POST(
@@ -96,7 +93,8 @@ export async function POST(
     // console.log(`POST request for group ${groupId} with body:`, body);
 
     if (body.type === 'STATE_UPDATE') {
-      const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>);
+      // Pass acting user's ID and username if provided in the body
+      const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
       return NextResponse.json(updatedRoom, { status: 200 });
     } else if (body.type === 'CHAT_MESSAGE') {
       const { message, userId, username } = body.payload as { message: string; userId: string; username: string };
@@ -106,8 +104,7 @@ export async function POST(
       
       const currentRoom = getRoomState(groupId) || initializeRoom(groupId);
       if (currentRoom.chatMessages.length >= MAX_CHAT_MESSAGES && MAX_CHAT_MESSAGES > 0) {
-        // Optionally notify user that chat history is full or older messages are being pruned.
-        // For now, we just slice in addChatMessageToRoom.
+        // Older messages are pruned by addChatMessageToRoom
       }
 
       const newChatMessage: ChatMessage = {
@@ -118,11 +115,11 @@ export async function POST(
         timestamp: Date.now(),
       };
       
+      // addChatMessageToRoom will handle updating and broadcasting, including host assignment logic
       const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage);
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
-        // This case should ideally not be hit if addChatMessageToRoom always returns a state
         return NextResponse.json({ error: 'Failed to add chat message' }, { status: 500 });
       }
     } else {

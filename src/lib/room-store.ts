@@ -14,6 +14,8 @@ export function initializeRoom(groupId: string): RoomState {
       queue: [],
       currentQueueIndex: -1,
       chatMessages: [],
+      hostId: undefined,
+      hostUsername: undefined,
     };
     roomStates.set(groupId, initialState);
     if (!roomSSEClients.has(groupId)) {
@@ -37,15 +39,20 @@ export function addChatMessageToRoom(groupId: string, chatMessage: ChatMessage):
   }
   
   const newChatMessages = [...currentRoom.chatMessages, chatMessage].slice(-MAX_CHAT_MESSAGES);
-  const updatedRoom: RoomState = { ...currentRoom, chatMessages: newChatMessages };
   
-  roomStates.set(groupId, updatedRoom);
-  broadcastRoomUpdate(groupId, updatedRoom);
-  return updatedRoom;
+  const updatedRoomStatePartial: Partial<RoomState> = { chatMessages: newChatMessages };
+  
+  // Pass the user sending the message as potential host assigner
+  return updateRoomStateAndBroadcast(groupId, updatedRoomStatePartial, chatMessage.userId, chatMessage.username);
 }
 
 
-export function updateRoomStateAndBroadcast(groupId: string, newState: Partial<RoomState>): RoomState {
+export function updateRoomStateAndBroadcast(
+    groupId: string, 
+    newState: Partial<RoomState>,
+    actingUserId?: string,
+    actingUsername?: string
+  ): RoomState {
   let currentRoom = roomStates.get(groupId);
   if (!currentRoom) {
     // console.log(`Updating non-existent room ${groupId}, initializing first.`);
@@ -54,24 +61,29 @@ export function updateRoomStateAndBroadcast(groupId: string, newState: Partial<R
     // console.log(`Updating existing room ${groupId}. Current state:`, currentRoom, "New partial state:", newState);
   }
 
-  // Ensure chatMessages isn't accidentally overwritten by a partial update that doesn't include it
-  const updatedRoom = { 
+  const updatedRoomObject: RoomState = { 
     ...currentRoom, 
     ...newState,
-    chatMessages: newState.chatMessages || currentRoom.chatMessages // Preserve existing chat if not in newState
+    // Preserve existing chat if not in newState, otherwise use newState's chatMessages
+    chatMessages: newState.chatMessages || currentRoom.chatMessages 
   };
+
+  // Assign host if not already set and actingUser is provided
+  if (!updatedRoomObject.hostId && actingUserId && actingUsername) {
+    updatedRoomObject.hostId = actingUserId;
+    updatedRoomObject.hostUsername = actingUsername;
+    // console.log(`Host for room ${groupId} set to ${actingUsername} (ID: ${actingUserId})`);
+  }
   
-  roomStates.set(groupId, updatedRoom);
-  // console.log(`Room ${groupId} updated. New state:`, updatedRoom);
-  broadcastRoomUpdate(groupId, updatedRoom);
-  return updatedRoom;
+  roomStates.set(groupId, updatedRoomObject);
+  // console.log(`Room ${groupId} updated. New state:`, updatedRoomObject);
+  broadcastRoomUpdate(groupId, updatedRoomObject);
+  return updatedRoomObject;
 }
 
 export function addSSEClient(groupId: string, controller: ReadableStreamDefaultController): void {
   if (!roomSSEClients.has(groupId)) {
-    // This check might be redundant if initializeRoom is always called before/with addSSEClient
-    // console.log(`Initializing room ${groupId} due to new SSE client.`);
-    initializeRoom(groupId); // Ensures room and client set are initialized
+    initializeRoom(groupId); 
   }
   roomSSEClients.get(groupId)?.add(controller);
   // console.log(`SSE client added to group ${groupId}. Total clients: ${roomSSEClients.get(groupId)?.size}`);
@@ -82,12 +94,6 @@ export function removeSSEClient(groupId: string, controller: ReadableStreamDefau
   if (clients) {
     clients.delete(controller);
     // console.log(`SSE client removed from group ${groupId}. Remaining clients: ${clients.size}`);
-    // Optional: if no clients left and no persistent data, maybe clear roomStates.get(groupId) after a timeout
-    // if (clients.size === 0) {
-    //   console.log(`No clients left in group ${groupId}. Consider cleanup.`);
-    //   // roomStates.delete(groupId); // Example cleanup
-    //   // roomSSEClients.delete(groupId);
-    // }
   }
 }
 
@@ -102,11 +108,8 @@ function broadcastRoomUpdate(groupId: string, state: RoomState): void {
         controller.enqueue(encodedMessage);
       } catch (e) {
         console.error(`Error broadcasting to client for group ${groupId}:`, e);
-        // Attempt to remove the problematic client; the stream might be closed or broken.
-        // The 'abort' listener in the GET route is the primary mechanism for cleanup.
-        removeSSEClient(groupId, controller); // Proactive removal attempt
+        removeSSEClient(groupId, controller); 
         try { controller.close(); } catch (closeError) { /* ignore */ }
-
       }
     });
   } else {

@@ -20,6 +20,8 @@ export interface RoomState {
   queue: Song[];
   currentQueueIndex: number;
   chatMessages: ChatMessage[];
+  hostId?: string;
+  hostUsername?: string;
 }
 
 export interface User {
