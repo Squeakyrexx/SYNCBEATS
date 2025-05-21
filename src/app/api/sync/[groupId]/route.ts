@@ -7,8 +7,9 @@ import {
   removeSSEClient,
   initializeRoom,
   addChatMessageToRoom,
+  updateUserPermission, // Ensure this is imported
 } from '@/lib/room-store';
-import type { RoomState, ChatMessage } from '@/types';
+import type { RoomState, ChatMessage, RoomUser } from '@/types';
 
 export const dynamic = 'force-dynamic'; // Ensure it's not statically optimized
 
@@ -31,20 +32,22 @@ export async function GET(
       try {
         addSSEClient(groupId, controller);
         
-        let currentRoomState = getRoomState(groupId);
+        let currentRoomState = getRoomState(groupId); // This calls initializeRoom if room doesn't exist
         if (!currentRoomState) {
-          console.warn(`[SSE /api/sync/${groupId}] Room not found initially for SSE, re-initializing.`);
-          currentRoomState = initializeRoom(groupId); // This should ensure room exists
-        }
-        
-        if (!currentRoomState) { // Should be nearly impossible now
+          // This should ideally not happen if getRoomState correctly calls initializeRoom
+          // or if addSSEClient already ensures room initialization for new groupIds.
+          // For safety, we can re-attempt initialization or error out.
+          console.warn(`[SSE /api/sync/${groupId}] Room not found after getRoomState, attempting to initialize again.`);
+          currentRoomState = initializeRoom(groupId); 
+          if (!currentRoomState) {
             const err = new Error("Failed to get or initialize room state for SSE.");
             console.error(`[SSE CRITICAL /api/sync/${groupId}]`, err.message);
             controller.error(err);
             try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
             return;
+          }
         }
-
+        
         const initialDataString = JSON.stringify(currentRoomState);
         console.log(`[SSE /api/sync/${groupId}] Prepared initial data string (first 100 chars): ${initialDataString.substring(0,100)}...`);
         const initialData = `data: ${initialDataString}\n\n`;
@@ -116,7 +119,7 @@ export async function GET(
 }
 
 interface PostBody {
-  type: 'STATE_UPDATE' | 'CHAT_MESSAGE';
+  type: 'STATE_UPDATE' | 'CHAT_MESSAGE' | 'UPDATE_USER_PERMISSION'; // Added 'UPDATE_USER_PERMISSION'
   payload: any; 
   userId?: string; 
   username?: string; 
@@ -134,17 +137,20 @@ export async function POST(
 
   try {
     const body = await request.json() as PostBody;
-    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}, UserID: ${body.userId}, Username: ${body.username}, Payload keys: ${Object.keys(body.payload || {}).join(', ')}`);
+    const rawBodyString = JSON.stringify(body); // For logging
+    console.log(`[POST /api/sync/${groupId}] Received raw body: ${rawBodyString.substring(0, 300)}${rawBodyString.length > 300 ? '...' : ''}`);
+    console.log(`[POST /api/sync/${groupId}] Received body.type: |${body.type}|`);
+    console.log(`[POST /api/sync/${groupId}] Received full body object:`, body);
+
 
     if (body.type === 'STATE_UPDATE') {
       if (!body.payload) {
         console.error(`[POST /api/sync/${groupId}] STATE_UPDATE received with no payload.`);
         return NextResponse.json({ error: 'STATE_UPDATE requires a payload' }, { status: 400 });
       }
-      // The payload is Partial<RoomState> and will be merged with existing state.
-      // actingUserId and actingUsername are passed directly from body.userId and body.username
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
       return NextResponse.json(updatedRoom, { status: 200 });
+
     } else if (body.type === 'CHAT_MESSAGE') {
       const { message, userId, username } = body.payload as { message: string; userId: string; username: string };
       if (!message || !userId || !username) {
@@ -160,15 +166,40 @@ export async function POST(
         timestamp: Date.now(),
       };
       
-      const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage);
+      const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage); // This calls updateRoomStateAndBroadcast internally
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
         console.error(`[POST /api/sync/${groupId}] Failed to add chat message, room store might be inconsistent.`);
         return NextResponse.json({ error: 'Failed to add chat message or room not found' }, { status: 500 });
       }
+
+    } else if (body.type === 'UPDATE_USER_PERMISSION') {
+      const { targetUserId, canAddSongs } = body.payload as { targetUserId: string; canAddSongs: boolean };
+      const actingUserId = body.userId; 
+
+      if (!actingUserId) {
+        console.error(`[POST /api/sync/${groupId} UPDATE_USER_PERMISSION] Missing actingUserId (host ID).`);
+        return NextResponse.json({ error: 'Authenticated user ID is required to update permissions.' }, { status: 401 });
+      }
+      if (typeof targetUserId !== 'string' || typeof canAddSongs !== 'boolean') {
+        console.error(`[POST /api/sync/${groupId} UPDATE_USER_PERMISSION] Invalid payload. targetUserId: ${targetUserId}, canAddSongs: ${canAddSongs}`);
+        return NextResponse.json({ error: 'Invalid payload for permission update' }, { status: 400 });
+      }
+      
+      console.log(`[POST /api/sync/${groupId} UPDATE_USER_PERMISSION] Attempting to update permission for targetUser: ${targetUserId} to canAddSongs: ${canAddSongs} by host: ${actingUserId}`);
+      const updatedRoom = updateUserPermission(groupId, actingUserId, targetUserId, canAddSongs);
+
+      if (updatedRoom) {
+        return NextResponse.json(updatedRoom, { status: 200 });
+      } else {
+        // updateUserPermission handles its own logging for reasons like "not host" or "user not found"
+        console.error(`[POST /api/sync/${groupId} UPDATE_USER_PERMISSION] Failed to update permission, or room/user not found. Host: ${actingUserId}, Target: ${targetUserId}`);
+        return NextResponse.json({ error: 'Failed to update permission. User might not be host, or target user/room not found.' }, { status: 403 }); 
+      }
+      
     } else {
-      console.warn(`[POST /api/sync/${groupId}] Invalid request type: ${body.type}`);
+      console.warn(`[POST /api/sync/${groupId}] Invalid request type received: ${body.type}`);
       return NextResponse.json({ error: 'Invalid request type' }, { status: 400 });
     }
 
@@ -181,3 +212,5 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
+
+    
