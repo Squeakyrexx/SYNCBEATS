@@ -33,7 +33,6 @@ declare global {
 const YOUTUBE_API_KEY = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 const PLAYER_CONTAINER_ID = 'youtube-player-container';
 const SSE_CONNECTION_TIMEOUT_MS = 15000; // 15 seconds
-const ACTIVE_USER_TIMEOUT_MS = 90 * 1000; 
 
 export default function PlayerPage() {
   const params = useParams();
@@ -72,7 +71,7 @@ export default function PlayerPage() {
 
   const queue = roomState?.queue || [];
   const currentQueueIndex = roomState?.currentQueueIndex ?? -1;
-  const currentPlayingSong = currentQueueIndex !== -1 && queue.length > 0 && queue[currentQueueIndex]
+  const currentPlayingSong = currentQueueIndex !== -1 && queue.length > 0 && currentQueueIndex < queue.length && queue[currentQueueIndex]
     ? queue[currentQueueIndex]
     : null;
   const chatMessages = roomState?.chatMessages || [];
@@ -163,7 +162,8 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      setSyncError(null);
+      setSyncError(null); // Clear sync error on successful open
+      setIsRoomLoading(false); // Set loading to false on successful open
 
       if (currentUser && !announcedPresenceRef.current) {
         console.log(`[PlayerPage] SSE opened, announcing presence for user: ${currentUser.username} in group ${groupIdFromParams}`);
@@ -171,7 +171,7 @@ export default function PlayerPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            type: 'STATE_UPDATE', 
+            type: 'STATE_UPDATE', // Using 'STATE_UPDATE' with empty payload will trigger touchUser
             payload: {}, 
             userId: currentUser.id,
             username: currentUser.username,
@@ -189,14 +189,14 @@ export default function PlayerPage() {
     };
 
     es.onmessage = (event) => {
-      // console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,200) + "...");
+      console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,200) + "...");
       if (sseTimeoutRef.current) {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
       try {
         const newRoomState: RoomState = JSON.parse(event.data);
-        // console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
+        console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
         setRoomState(newRoomState);
         setIsRoomLoading(false); 
         setSyncError(null); 
@@ -213,10 +213,11 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
+      // Only show toast if not already timed out, to avoid double alerts
       if (!syncError || !syncError.includes("timed out")) { 
          toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
       }
-      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others.");
+      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others."); // Preserve existing syncError if it was a timeout
       setIsRoomLoading(false);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -235,7 +236,8 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  }, [groupIdFromParams, currentUser, toast, isRoomLoading]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupIdFromParams, currentUser, router]); // isRoomLoading removed, toast removed
 
 
   useEffect(() => {
@@ -278,7 +280,7 @@ export default function PlayerPage() {
 
   const playNextSongInQueue = useCallback(() => {
     if (!isCurrentUserHost || !currentUser) return; 
-    // console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
+    console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
        updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1, isPlaying: true, lastPlaybackChangeBy: currentUser.id });
     } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) {
@@ -288,21 +290,18 @@ export default function PlayerPage() {
   }, [currentQueueIndex, queue, toast, updateServerRoomState, isCurrentUserHost, currentUser]);
 
   const onPlayerReady = useCallback((event: any) => {
-    // console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
-    // serverIsPlaying and the sync effect should handle if it needs to play.
-    // Forcing playVideo() here might fight with the server state if it's supposed to be paused.
+    console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
     const player = event.target;
     if (player && typeof player.getPlayerState === 'function' && typeof player.playVideo === 'function') {
         const currentState = player.getPlayerState();
-        // Attempt to play if it's unstarted, cued, or paused, and server says it should be playing
         if (serverIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
-            // console.log("[PlayerPage onPlayerReady] Player ready, server says playing, player not. Attempting to play.");
+            console.log("[PlayerPage onPlayerReady] Player ready, server says playing, player not. Attempting to play.");
             isProgrammaticPlayPauseRef.current = true;
             player.playVideo();
             setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
         }
     }
-  }, [serverIsPlaying]); // Ensure this callback uses the latest serverIsPlaying
+  }, [serverIsPlaying]);
 
   const onPlayerError = useCallback((event: any) => {
     console.error("[PlayerPage onPlayerError] YouTube Player Error:", event.data);
@@ -317,11 +316,11 @@ export default function PlayerPage() {
   }, [toast, playNextSongInQueue, isCurrentUserHost, currentUser]);
 
   const onPlayerStateChange = useCallback((event: any) => {
-    // console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
+    console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
     if (!window.YT || !window.YT.PlayerState || !currentUser) return;
 
     if (isProgrammaticPlayPauseRef.current) {
-      // console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
+      console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
         return; 
     }
 
@@ -340,7 +339,7 @@ export default function PlayerPage() {
     }
 
     if (newIsPlayingState !== undefined) {
-      // console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Server isPlaying: ${serverIsPlaying}`);
+      console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}.`);
       updateServerRoomState({ isPlaying: newIsPlayingState, lastPlaybackChangeBy: currentUser.id });
     }
   }, [isCurrentUserHost, playNextSongInQueue, updateServerRoomState, currentUser]);
@@ -352,10 +351,10 @@ export default function PlayerPage() {
       return;
     }
     initializingPlayerRef.current = true;
-    // console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
+    console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
 
     if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-      // console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
+      console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
       playerRef.current.destroy();
       playerRef.current = null;
     }
@@ -368,7 +367,7 @@ export default function PlayerPage() {
           playerVars: { autoplay: 1, enablejsapi: 1, controls: 1, modestbranding: 1, rel: 0 },
           events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange, 'onError': onPlayerError },
         });
-        // console.log("[PlayerPage InitializePlayer] New player instance created.");
+        console.log("[PlayerPage InitializePlayer] New player instance created.");
       } catch (e) {
         console.error("[PlayerPage InitializePlayer] Error creating YouTube player:", e);
         toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
@@ -383,7 +382,7 @@ export default function PlayerPage() {
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
 
   useEffect(() => {
-    // console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
+    console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
       if(playerRef.current && typeof playerRef.current.destroy === 'function' && !currentPlayingSong) {
         // console.log("[PlayerPage PlayerEffect] No current song and room not ready/loading, destroying player.");
@@ -398,7 +397,7 @@ export default function PlayerPage() {
     if (currentPlayingSong) {
       const currentVideoIdInPlayer = playerRef.current?.getVideoData?.()?.video_id;
       if (currentVideoIdInPlayer !== currentPlayingSong.id) {
-        // console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
+        console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
         initializePlayer(currentPlayingSong.id);
       } else {
          // console.log(`[PlayerPage PlayerEffect] Song ${currentPlayingSong.title} already loaded in player.`);
@@ -434,10 +433,10 @@ export default function PlayerPage() {
     isProgrammaticPlayPauseRef.current = true; 
 
     if (serverIsPlaying && localPlayerState !== window.YT.PlayerState.PLAYING && localPlayerState !== window.YT.PlayerState.BUFFERING) {
-      // console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
+      console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
       playerRef.current.playVideo();
     } else if (!serverIsPlaying && localPlayerState === window.YT.PlayerState.PLAYING) {
-      // console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
+      console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
       playerRef.current.pauseVideo();
     } else {
       //  console.log("[PlayerPage PlaySyncEffect] No playback command needed. Local/Server state aligned or change was local.");
@@ -503,7 +502,7 @@ export default function PlayerPage() {
     setIsLoadingSuggestions(true); setSuggestedSongs([]);
 
     let suggestionQuery = songForSuggestions.artist; 
-    // console.log("[PlayerPage handleFetchSuggestions] Fetching details for suggestion base song:", songForSuggestions.title);
+    console.log("[PlayerPage handleFetchSuggestions] Fetching details for suggestion base song:", songForSuggestions.title);
 
     try {
       const videoDetailsResponse = await fetch(
@@ -537,7 +536,7 @@ export default function PlayerPage() {
       } else {
          console.warn("[PlayerPage handleFetchSuggestions] Failed to fetch video details for genre hint. Status:", videoDetailsResponse.status);
       }
-      // console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
+      console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -582,27 +581,29 @@ export default function PlayerPage() {
       return;
     }
     if (!song.id || !song.artist || !song.channelId) {
-      toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID.", variant: "destructive" });
+      toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID. Suggestions might fail.", variant: "destructive" });
       console.warn("[PlayerPage handleSelectSong] Attempted to add song with incomplete data:", song);
-      return;
+      // Allow adding to queue even if some data is missing, but warn about suggestions
     }
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
     let shouldStartPlaying = serverIsPlaying; 
+    let newLastPlaybackChangeBy = roomState?.lastPlaybackChangeBy;
 
     if (currentQueueIndex === -1 || queue.length === 0) {
       newIndex = newQueue.length - 1; 
       shouldStartPlaying = true; 
-      // console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
+      newLastPlaybackChangeBy = currentUser.id;
+      console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
     } else {
-      // console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentQueueIndex}. New song: ${song.title} added.`);
+      console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentQueueIndex}. New song: ${song.title} added.`);
     }
 
     updateServerRoomState({ 
         queue: newQueue, 
         currentQueueIndex: newIndex,
         isPlaying: shouldStartPlaying, 
-        lastPlaybackChangeBy: (shouldStartPlaying && newIndex !== currentQueueIndex) ? currentUser.id : roomState?.lastPlaybackChangeBy
+        lastPlaybackChangeBy: newLastPlaybackChangeBy
     });
 
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
@@ -645,7 +646,7 @@ export default function PlayerPage() {
       toast({ title: "Action Denied", description: "Only the host can stop the player and clear the queue.", variant: "destructive" });
       return;
     }
-    // console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
+    console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
     updateServerRoomState({ queue: [], currentQueueIndex: -1, isPlaying: false, lastPlaybackChangeBy: currentUser.id });
     setSuggestedSongs([]); 
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
@@ -656,7 +657,7 @@ export default function PlayerPage() {
       toast({ title: "Action Denied", description: "Only the host can skip songs.", variant: "destructive" });
       return;
     }
-    // console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
+    console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
       updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1, isPlaying: true, lastPlaybackChangeBy: currentUser.id });
     } else {
@@ -701,7 +702,7 @@ export default function PlayerPage() {
       toast({ title: "Permission Denied", description: "Only the host can change song permissions.", variant: "destructive" });
       return;
     }
-    // console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
+    console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
     try {
       const response = await fetch(`/api/sync/${groupIdFromParams}`, {
         method: 'POST',
@@ -730,9 +731,8 @@ export default function PlayerPage() {
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
   
-  // const isUserActive = (user: RoomUser) => (Date.now() - user.lastSeen) < ACTIVE_USER_TIMEOUT_MS;
-  const activeUsers = roomUsers; 
-  // console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
+  const activeUsers = roomUsers; // Simplified: show all users from roomState
+  console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
 
 
   if (isRoomLoading) {
@@ -825,9 +825,9 @@ export default function PlayerPage() {
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
                   <div className="flex w-full justify-center space-x-2">
-                    <Tooltip>
+                     <Tooltip>
                         <TooltipTrigger asChild>
-                           <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
+                            <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
                                 <ListMusic /> <span className="ml-1">Stop & Clear</span>
                             </Button>
                         </TooltipTrigger>
@@ -861,7 +861,7 @@ export default function PlayerPage() {
           </div>
 
           {(queue.length > 0 && upNextQueue.length > 0) && (
-            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]">
+            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]"> {/* Adjusted max-h for larger screens */}
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
@@ -914,7 +914,10 @@ export default function PlayerPage() {
                             <TooltipTrigger asChild>
                                 <Card 
                                     className={`flex items-center p-3 gap-3 transition-all bg-muted/50 ${canCurrentUserAddSongs ? 'hover:bg-muted/70 hover:shadow-md cursor-pointer' : 'opacity-70 cursor-not-allowed'}`}
-                                    onClick={() => canCurrentUserAddSongs && handleSelectSong(song)} 
+                                    onClick={() => {
+                                        if (canCurrentUserAddSongs) handleSelectSong(song);
+                                        else toast({ title: "Permission Denied", description: addSongPermissionTooltip, variant: "destructive" });
+                                    }}
                                     tabIndex={canCurrentUserAddSongs ? 0 : -1} 
                                     onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
                                     aria-disabled={!canCurrentUserAddSongs}
@@ -947,7 +950,10 @@ export default function PlayerPage() {
                             <TooltipTrigger asChild>
                                 <Card 
                                     className={`flex items-center p-3 gap-3 transition-all bg-muted/50 ${canCurrentUserAddSongs ? 'hover:bg-muted/70 hover:shadow-md cursor-pointer' : 'opacity-70 cursor-not-allowed'}`}
-                                    onClick={() => canCurrentUserAddSongs && handleSelectSong(song)} 
+                                    onClick={() => {
+                                        if (canCurrentUserAddSongs) handleSelectSong(song);
+                                        else toast({ title: "Permission Denied", description: addSongPermissionTooltip, variant: "destructive" });
+                                    }}
                                     tabIndex={canCurrentUserAddSongs ? 0 : -1} 
                                     onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
                                     aria-disabled={!canCurrentUserAddSongs}

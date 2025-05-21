@@ -7,13 +7,14 @@ const roomStates = new Map<string, RoomState>();
 const roomSSEClients = new Map<string, Set<ReadableStreamDefaultController>>();
 
 export const MAX_CHAT_MESSAGES = 100;
-export const ACTIVE_USER_TIMEOUT_MS = 90 * 1000; // 90 seconds
 
 function transformUsersForClient(serverUsers: Record<string, ServerRoomUser>): RoomUser[] {
   if (!serverUsers) return [];
   return Object.entries(serverUsers).map(([id, user]) => ({
     id,
-    ...user,
+    username: user.username,
+    canAddSongs: user.canAddSongs,
+    lastSeen: user.lastSeen, // Keep lastSeen if needed for other features
   }));
 }
 
@@ -53,8 +54,13 @@ export function initializeRoom(groupId: string, actingUserId?: string, actingUse
     return initialState;
   }
   const existingRoom = roomStates.get(groupId)!;
-  console.log(`[RoomStore initializeRoom] Room ${groupId} already exists:`, existingRoom);
-  return existingRoom;
+  // If existing room, ensure actingUser (if provided) is touched to update their lastSeen
+  // and potentially add them if they somehow weren't there.
+  if (actingUserId && actingUsername) {
+     touchUser(groupId, actingUserId, actingUsername); // This ensures the user is active
+  }
+  console.log(`[RoomStore initializeRoom] Room ${groupId} already exists, returning existing state after potential touchUser.`);
+  return roomStates.get(groupId)!; // Re-get in case touchUser modified it
 }
 
 export function getRoomState(groupId: string): RoomState | undefined {
@@ -75,7 +81,6 @@ export function touchUser(groupId: string, userId: string, username: string): Ro
   const room = roomStates.get(groupId);
   if (!room) {
     console.warn(`[RoomStore touchUser] Room ${groupId} not found. Cannot touch user ${username}. User might be initializing the room.`);
-    // If room doesn't exist, updateRoomStateAndBroadcast will call initializeRoom
     return undefined;
   }
 
@@ -84,7 +89,7 @@ export function touchUser(groupId: string, userId: string, username: string): Ro
     console.log(`[RoomStore touchUser] Adding new user ${username} (ID: ${userId}) to room ${groupId}. Is host? ${userId === room.hostId}`);
     room.users[userId] = {
       username: username,
-      canAddSongs: userId === room.hostId, // True if they are host, false otherwise
+      canAddSongs: userId === room.hostId, // True if they are host, false otherwise by default
       lastSeen: Date.now(),
     };
   } else {
@@ -113,15 +118,18 @@ export function addChatMessageToRoom(groupId: string, chatMessage: ChatMessage):
     // Room doesn't exist, updateRoomStateAndBroadcast will initialize it.
     // The user sending the message will become the host.
     console.log(`[RoomStore addChatMessageToRoom] Room ${groupId} not found. User ${chatMessage.username} will initialize it and become host.`);
+    // Initialize room which will set the user as host
+     currentRoom = initializeRoom(groupId, chatMessage.userId, chatMessage.username);
   } else {
     // Room exists, touch the user who sent the message.
     touchUser(groupId, chatMessage.userId, chatMessage.username);
     currentRoom = roomStates.get(groupId)!; // Re-fetch state after touchUser
   }
   
-  const newChatMessages = currentRoom ? [...currentRoom.chatMessages, chatMessage].slice(-MAX_CHAT_MESSAGES) : [chatMessage];
+  const newChatMessages = [...currentRoom.chatMessages, chatMessage].slice(-MAX_CHAT_MESSAGES);
   const updatedRoomStatePartial: Partial<RoomState> = { chatMessages: newChatMessages };
   
+  // Pass userId and username so updateRoomStateAndBroadcast can also touchUser
   return updateRoomStateAndBroadcast(groupId, updatedRoomStatePartial, chatMessage.userId, chatMessage.username);
 }
 
@@ -136,37 +144,35 @@ export function updateRoomStateAndBroadcast(
 
   if (!currentRoom) {
     console.log(`[RoomStore updateRoomStateAndBroadcast] Updating non-existent room ${groupId}, initializing first. Acting user: ${actingUsername} (ID: ${actingUserId})`);
-    // Initialize room will set actingUser as host and add them to users list with canAddSongs: true
     currentRoom = initializeRoom(groupId, actingUserId, actingUsername);
   } else if (actingUserId && actingUsername) {
-    // If room exists, ensure the acting user is 'touched' (active and in users list)
-    // This will also correct host permission if actingUser is host.
     touchUser(groupId, actingUserId, actingUsername);
-    currentRoom = roomStates.get(groupId)!; // Re-fetch after touchUser modifies the room's users
+    currentRoom = roomStates.get(groupId)!; 
   }
 
   const finalIsPlaying = newState.currentQueueIndex === -1 ? false : newState.isPlaying !== undefined ? newState.isPlaying : currentRoom.isPlaying;
 
-  // Merge users carefully: if newState.users is provided (e.g., from permission update), use it. Otherwise, keep currentRoom.users.
   const mergedUsers = newState.users || currentRoom.users;
 
   const updatedRoomObject: RoomState = { 
     ...currentRoom, 
     ...newState, 
-    users: mergedUsers, // Use the merged users
+    users: mergedUsers, 
     isPlaying: finalIsPlaying,
     chatMessages: newState.chatMessages || currentRoom.chatMessages,
+    // Preserve hostId and hostUsername unless newState explicitly changes them (which it shouldn't for most ops)
+    hostId: newState.hostId !== undefined ? newState.hostId : currentRoom.hostId,
+    hostUsername: newState.hostUsername !== undefined ? newState.hostUsername : currentRoom.hostUsername,
   };
 
   // Assign host if not already set and actingUser is provided
   if (!updatedRoomObject.hostId && actingUserId && actingUsername) {
     updatedRoomObject.hostId = actingUserId;
     updatedRoomObject.hostUsername = actingUsername;
-    // Ensure the new host is in the users list and can add songs
     if (updatedRoomObject.users[actingUserId]) {
       updatedRoomObject.users[actingUserId].canAddSongs = true;
     } else { 
-        console.warn(`[RoomStore updateRoomStateAndBroadcast] New host ${actingUsername} (ID: ${actingUserId}) was not in users list, adding.`);
+        console.warn(`[RoomStore updateRoomStateAndBroadcast] New host ${actingUsername} (ID: ${actingUserId}) was not in users list upon host assignment, adding.`);
         updatedRoomObject.users[actingUserId] = { username: actingUsername, canAddSongs: true, lastSeen: Date.now()};
     }
     console.log(`[RoomStore updateRoomStateAndBroadcast] Host for room ${groupId} set to ${actingUsername} (ID: ${actingUserId})`);
@@ -175,13 +181,12 @@ export function updateRoomStateAndBroadcast(
   // Final safeguard: Ensure host ALWAYS has canAddSongs permission
   if (updatedRoomObject.hostId && updatedRoomObject.users[updatedRoomObject.hostId]) {
       if (!updatedRoomObject.users[updatedRoomObject.hostId].canAddSongs) {
-        console.log(`[RoomStore updateRoomStateAndBroadcast] FINAL CHECK (host exists): Host ${updatedRoomObject.hostUsername} in room ${groupId} now has canAddSongs = true.`);
+        console.log(`[RoomStore updateRoomStateAndBroadcast] FINAL CHECK (host exists in users): Host ${updatedRoomObject.hostUsername} in room ${groupId} now has canAddSongs = true.`);
         updatedRoomObject.users[updatedRoomObject.hostId].canAddSongs = true;
       }
   } else if (updatedRoomObject.hostId && actingUserId === updatedRoomObject.hostId && actingUsername) {
       // This handles the case where the acting user IS the host, but their entry might not exist in users yet
-      // (e.g. room was initialized without users, host is first to interact)
-      console.log(`[RoomStore updateRoomStateAndBroadcast] FINAL CHECK (host is acting user, new entry): Host ${actingUsername} in room ${groupId} now has canAddSongs = true.`);
+      console.log(`[RoomStore updateRoomStateAndBroadcast] FINAL CHECK (host is acting user, potentially new user entry): Host ${actingUsername} in room ${groupId} now has canAddSongs = true.`);
       updatedRoomObject.users[updatedRoomObject.hostId] = { 
           username: actingUsername, 
           canAddSongs: true, 
@@ -205,8 +210,8 @@ export function updateRoomStateAndBroadcast(
 
 export function updateUserPermission(
   groupId: string,
-  actingUserId: string, // User trying to make the change
-  targetUserId: string, // User whose permission is being changed
+  actingUserId: string, 
+  targetUserId: string, 
   canAddSongs: boolean
 ): RoomState | undefined {
   const room = roomStates.get(groupId);
@@ -225,9 +230,10 @@ export function updateUserPermission(
   if (targetUserId === room.hostId) {
     console.warn(`[RoomStore updateUserPermission] Cannot change song adding permission for the host (${targetUserId}). Host always has permission.`);
     // Ensure host permission is true if it somehow got here.
-    room.users[targetUserId].canAddSongs = true; 
-    // No actual change needed, but broadcast to be safe if state was inconsistent
-    broadcastRoomUpdate(groupId, room);
+    if (!room.users[targetUserId].canAddSongs) {
+        room.users[targetUserId].canAddSongs = true; 
+        broadcastRoomUpdate(groupId, room); // Broadcast if corrected
+    }
     return { ...room, users: transformUsersForClient(room.users) };
   }
 
@@ -250,13 +256,8 @@ export function addSSEClient(groupId: string, controller: ReadableStreamDefaultC
     roomSSEClients.set(groupId, new Set());
   }
   
-  // Room initialization is now primarily handled by updateRoomStateAndBroadcast 
-  // when the first user action (like the client "announce" POST) occurs.
-  // However, we ensure the SSE client set exists.
   if (!roomStates.has(groupId)) { 
-    console.log(`[RoomStore addSSEClient] First client for ${groupId}, room will be fully initialized on first user action.`);
-    // Minimal initialization just to have the room entry if needed before first action.
-    // Host will be assigned on first interaction (chat/song add/announce).
+    console.log(`[RoomStore addSSEClient] First client for ${groupId}, room will be fully initialized on first user action (e.g. client announce POST).`);
     initializeRoom(groupId); 
   }
   roomSSEClients.get(groupId)?.add(controller);
@@ -268,13 +269,6 @@ export function removeSSEClient(groupId: string, controller: ReadableStreamDefau
   if (clients) {
     clients.delete(controller);
     console.log(`[RoomStore removeSSEClient] SSE client removed from group ${groupId}. Remaining clients: ${clients.size}`);
-    // Optional: Clean up room if no clients are left?
-    // This can be aggressive if a user just temporarily disconnects.
-    // if (clients.size === 0 && roomStates.has(groupId)) {
-    //   console.log(`[RoomStore removeSSEClient] Room ${groupId} has no clients. Removing room state.`);
-    //   roomStates.delete(groupId);
-    //   roomSSEClients.delete(groupId);
-    // }
   }
 }
 
@@ -285,8 +279,8 @@ function broadcastRoomUpdate(groupId: string, state: RoomState): void {
       ...state,
       users: transformUsersForClient(state.users), 
     };
-    // console.log(`[RoomStore broadcastRoomUpdate] Broadcasting update for group ${groupId} to ${clients.size} client(s).`);
-    // console.log(`[RoomStore broadcastRoomUpdate] Users being sent to client for group ${groupId}:`, stateForClient.users);
+    console.log(`[RoomStore broadcastRoomUpdate] Broadcasting update for group ${groupId} to ${clients.size} client(s).`);
+    console.log(`[RoomStore broadcastRoomUpdate] Users being sent to client for group ${groupId}:`, stateForClient.users);
     
     const message = `data: ${JSON.stringify(stateForClient)}\n\n`;
     const encodedMessage = new TextEncoder().encode(message);
@@ -309,3 +303,5 @@ function broadcastRoomUpdate(groupId: string, state: RoomState): void {
     // console.log(`[RoomStore broadcastRoomUpdate] No clients to broadcast to for group ${groupId}.`);
   }
 }
+
+    
