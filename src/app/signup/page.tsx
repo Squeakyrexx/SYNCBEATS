@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from 'react';
+import { useState, useContext } from 'react'; // Added useContext
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, UserPlus } from 'lucide-react';
+import { AuthContext } from '@/context/AuthContext'; // Added AuthContext import
 
 export default function SignUpPage() {
   const [username, setUsername] = useState('');
@@ -17,10 +18,21 @@ export default function SignUpPage() {
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
+  const authContext = useContext(AuthContext); // Get AuthContext
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
+
+    if (!authContext) {
+      toast({
+        title: "Error",
+        description: "Authentication service not available. Please try again later.",
+        variant: "destructive",
+      });
+      setIsLoading(false);
+      return;
+    }
 
     if (username.length < 3 || password.length < 6) {
       toast({
@@ -44,9 +56,23 @@ export default function SignUpPage() {
       if (response.ok) {
         toast({
           title: "Account Created!",
-          description: "You can now log in with your new account.",
+          description: "Logging you in...",
         });
-        router.push('/login');
+        
+        // Attempt to log in immediately after successful signup
+        const loginSuccess = await authContext.login(username, password);
+        if (loginSuccess) {
+          // AuthContext.login sets the user state. Redirect to homepage.
+          router.push('/'); 
+        } else {
+          // This case should be rare if signup just succeeded with the same credentials
+          toast({
+            title: "Auto Login Failed",
+            description: "Your account was created, but auto-login failed. Please log in manually.",
+            variant: "destructive",
+          });
+          router.push('/login'); // Fallback to login page
+        }
       } else {
         toast({
           title: "Sign Up Failed",
@@ -99,9 +125,9 @@ export default function SignUpPage() {
                 minLength={6}
               />
             </div>
-            <Button type="submit" className="w-full text-lg py-3" disabled={isLoading}>
-              {isLoading ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <UserPlus className="mr-2 h-5 w-5" />}
-              {isLoading ? 'Creating Account...' : 'Sign Up'}
+            <Button type="submit" className="w-full text-lg py-3" disabled={isLoading || authContext?.isLoading}>
+              {(isLoading || authContext?.isLoading) ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <UserPlus className="mr-2 h-5 w-5" />}
+              {(isLoading || authContext?.isLoading) ? 'Processing...' : 'Sign Up'}
             </Button>
           </CardContent>
         </form>
