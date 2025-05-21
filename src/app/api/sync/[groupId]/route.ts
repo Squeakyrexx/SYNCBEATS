@@ -7,7 +7,6 @@ import {
   removeSSEClient,
   initializeRoom,
   addChatMessageToRoom,
-  MAX_CHAT_MESSAGES,
 } from '@/lib/room-store';
 import type { RoomState, ChatMessage } from '@/types';
 
@@ -34,13 +33,16 @@ export async function GET(
         
         let currentRoomState = getRoomState(groupId);
         if (!currentRoomState) {
-          console.warn(`[SSE /api/sync/${groupId}] Room not found after addSSEClient, re-initializing. This might indicate an issue.`);
-          currentRoomState = initializeRoom(groupId);
+          console.warn(`[SSE /api/sync/${groupId}] Room not found initially for SSE, re-initializing.`);
+          currentRoomState = initializeRoom(groupId); // This should ensure room exists
         }
         
-        if (!currentRoomState) {
-            // This should be virtually impossible if initializeRoom works
-            throw new Error("Failed to get or initialize room state.");
+        if (!currentRoomState) { // Should be nearly impossible now
+            const err = new Error("Failed to get or initialize room state for SSE.");
+            console.error(`[SSE CRITICAL /api/sync/${groupId}]`, err.message);
+            controller.error(err);
+            try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+            return;
         }
 
         const initialDataString = JSON.stringify(currentRoomState);
@@ -56,9 +58,10 @@ export async function GET(
               // console.log(`[SSE /api/sync/${groupId}] Sending keep-alive.`);
               controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
             } else {
-              console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null, closing keep-alive. Size: ${controller.desiredSize}`);
+              console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null for keep-alive, closing. Size: ${controller.desiredSize}`);
               if (keepAliveInterval) clearInterval(keepAliveInterval);
               removeSSEClient(groupId, controller); 
+              try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
             }
           } catch (e) {
             console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
@@ -79,16 +82,16 @@ export async function GET(
         const error = e instanceof Error ? e : new Error(String(e));
         console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, error.message, error.stack);
         if (keepAliveInterval) clearInterval(keepAliveInterval);
-        removeSSEClient(groupId, controller); // Attempt cleanup
+        removeSSEClient(groupId, controller); 
         try {
           if (controller.desiredSize !== null) { 
-             controller.error(error); // Signal error on the stream
+             controller.error(error); 
           }
         } catch (errSignalError) {
             console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
         }
         try { 
-          if (controller.desiredSize !== null && controller.desiredSize !== undefined) { // extra check for desiredSize
+          if (controller.desiredSize !== null) { 
             controller.close(); 
           }
         } catch (closeErr) {
@@ -98,10 +101,7 @@ export async function GET(
     },
     cancel(_reason) {
       console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
-      // Cleanup for `keepAliveInterval` here is tricky due to scope. 
-      // It primarily relies on the 'abort' event on request.signal.
-      // `removeSSEClient` should be called with the correct controller instance if possible,
-      // but typically cancellation from client aborts the request signal.
+      // Cleanup logic is mostly in 'abort' event and keep-alive interval checks.
     }
   });
 
@@ -134,9 +134,15 @@ export async function POST(
 
   try {
     const body = await request.json() as PostBody;
-    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}, UserID: ${body.userId}, Username: ${body.username}`);
+    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}, UserID: ${body.userId}, Username: ${body.username}, Payload keys: ${Object.keys(body.payload || {}).join(', ')}`);
 
     if (body.type === 'STATE_UPDATE') {
+      if (!body.payload) {
+        console.error(`[POST /api/sync/${groupId}] STATE_UPDATE received with no payload.`);
+        return NextResponse.json({ error: 'STATE_UPDATE requires a payload' }, { status: 400 });
+      }
+      // The payload is Partial<RoomState> and will be merged with existing state.
+      // actingUserId and actingUsername are passed directly from body.userId and body.username
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
       return NextResponse.json(updatedRoom, { status: 200 });
     } else if (body.type === 'CHAT_MESSAGE') {

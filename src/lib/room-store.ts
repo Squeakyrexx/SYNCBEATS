@@ -9,6 +9,7 @@ const roomSSEClients = new Map<string, Set<ReadableStreamDefaultController>>();
 export const MAX_CHAT_MESSAGES = 100;
 
 export function initializeRoom(groupId: string): RoomState {
+  console.log(`[RoomStore] Initializing room: ${groupId}`);
   if (!roomStates.has(groupId)) {
     const initialState: RoomState = {
       queue: [],
@@ -16,15 +17,17 @@ export function initializeRoom(groupId: string): RoomState {
       chatMessages: [],
       hostId: undefined,
       hostUsername: undefined,
+      isPlaying: false, // Initial playback state
+      lastPlaybackChangeBy: undefined, // Who changed playback last
     };
     roomStates.set(groupId, initialState);
     if (!roomSSEClients.has(groupId)) {
       roomSSEClients.set(groupId, new Set());
     }
-    // console.log(`Room initialized: ${groupId}`, initialState);
+    console.log(`[RoomStore] Room initialized: ${groupId}`, initialState);
     return initialState;
   }
-  // console.log(`Room already exists: ${groupId}`, roomStates.get(groupId)!);
+  console.log(`[RoomStore] Room already exists: ${groupId}`, roomStates.get(groupId)!);
   return roomStates.get(groupId)!;
 }
 
@@ -35,6 +38,7 @@ export function getRoomState(groupId: string): RoomState | undefined {
 export function addChatMessageToRoom(groupId: string, chatMessage: ChatMessage): RoomState | undefined {
   let currentRoom = roomStates.get(groupId);
   if (!currentRoom) {
+    console.log(`[RoomStore addChatMessageToRoom] Room ${groupId} not found, initializing.`);
     currentRoom = initializeRoom(groupId);
   }
   
@@ -42,7 +46,6 @@ export function addChatMessageToRoom(groupId: string, chatMessage: ChatMessage):
   
   const updatedRoomStatePartial: Partial<RoomState> = { chatMessages: newChatMessages };
   
-  // Pass the user sending the message as potential host assigner
   return updateRoomStateAndBroadcast(groupId, updatedRoomStatePartial, chatMessage.userId, chatMessage.username);
 }
 
@@ -55,15 +58,19 @@ export function updateRoomStateAndBroadcast(
   ): RoomState {
   let currentRoom = roomStates.get(groupId);
   if (!currentRoom) {
-    // console.log(`Updating non-existent room ${groupId}, initializing first.`);
+    console.log(`[RoomStore updateRoomStateAndBroadcast] Updating non-existent room ${groupId}, initializing first.`);
     currentRoom = initializeRoom(groupId);
   } else {
-    // console.log(`Updating existing room ${groupId}. Current state:`, currentRoom, "New partial state:", newState);
+    // console.log(`[RoomStore updateRoomStateAndBroadcast] Updating existing room ${groupId}. Current state:`, currentRoom, "New partial state:", newState);
   }
+
+  // If currentQueueIndex is explicitly set to -1, ensure isPlaying is false
+  const finalIsPlaying = newState.currentQueueIndex === -1 ? false : newState.isPlaying !== undefined ? newState.isPlaying : currentRoom.isPlaying;
 
   const updatedRoomObject: RoomState = { 
     ...currentRoom, 
     ...newState,
+    isPlaying: finalIsPlaying,
     // Preserve existing chat if not in newState, otherwise use newState's chatMessages
     chatMessages: newState.chatMessages || currentRoom.chatMessages 
   };
@@ -72,47 +79,54 @@ export function updateRoomStateAndBroadcast(
   if (!updatedRoomObject.hostId && actingUserId && actingUsername) {
     updatedRoomObject.hostId = actingUserId;
     updatedRoomObject.hostUsername = actingUsername;
-    // console.log(`Host for room ${groupId} set to ${actingUsername} (ID: ${actingUserId})`);
+    console.log(`[RoomStore updateRoomStateAndBroadcast] Host for room ${groupId} set to ${actingUsername} (ID: ${actingUserId})`);
   }
   
   roomStates.set(groupId, updatedRoomObject);
-  // console.log(`Room ${groupId} updated. New state:`, updatedRoomObject);
+  console.log(`[RoomStore updateRoomStateAndBroadcast] Room ${groupId} updated. New state:`, updatedRoomObject);
   broadcastRoomUpdate(groupId, updatedRoomObject);
   return updatedRoomObject;
 }
 
 export function addSSEClient(groupId: string, controller: ReadableStreamDefaultController): void {
   if (!roomSSEClients.has(groupId)) {
+    console.log(`[RoomStore addSSEClient] First client for ${groupId}, ensuring room is initialized.`);
     initializeRoom(groupId); 
   }
   roomSSEClients.get(groupId)?.add(controller);
-  // console.log(`SSE client added to group ${groupId}. Total clients: ${roomSSEClients.get(groupId)?.size}`);
+  console.log(`[RoomStore addSSEClient] SSE client added to group ${groupId}. Total clients: ${roomSSEClients.get(groupId)?.size}`);
 }
 
 export function removeSSEClient(groupId: string, controller: ReadableStreamDefaultController): void {
   const clients = roomSSEClients.get(groupId);
   if (clients) {
     clients.delete(controller);
-    // console.log(`SSE client removed from group ${groupId}. Remaining clients: ${clients.size}`);
+    console.log(`[RoomStore removeSSEClient] SSE client removed from group ${groupId}. Remaining clients: ${clients.size}`);
   }
 }
 
 function broadcastRoomUpdate(groupId: string, state: RoomState): void {
   const clients = roomSSEClients.get(groupId);
   if (clients && clients.size > 0) {
-    // console.log(`Broadcasting update for group ${groupId} to ${clients.size} client(s):`, state);
+    console.log(`[RoomStore broadcastRoomUpdate] Broadcasting update for group ${groupId} to ${clients.size} client(s):`, state);
     const message = `data: ${JSON.stringify(state)}\n\n`;
     const encodedMessage = new TextEncoder().encode(message);
     clients.forEach(controller => {
       try {
-        controller.enqueue(encodedMessage);
+        if (controller.desiredSize === null || controller.desiredSize > 0) {
+            controller.enqueue(encodedMessage);
+        } else {
+            console.warn(`[RoomStore broadcastRoomUpdate] Controller for ${groupId} not ready to enqueue, removing client.`);
+            removeSSEClient(groupId, controller);
+            try { controller.close(); } catch { /* ignore */ }
+        }
       } catch (e) {
-        console.error(`Error broadcasting to client for group ${groupId}:`, e);
+        console.error(`[RoomStore broadcastRoomUpdate] Error broadcasting to client for group ${groupId}:`, e);
         removeSSEClient(groupId, controller); 
-        try { controller.close(); } catch (closeError) { /* ignore */ }
+        try { if(controller.desiredSize !== null) controller.close(); } catch (closeError) { /* ignore */ }
       }
     });
   } else {
-    // console.log(`No clients to broadcast to for group ${groupId}.`);
+    // console.log(`[RoomStore broadcastRoomUpdate] No clients to broadcast to for group ${groupId}.`);
   }
 }

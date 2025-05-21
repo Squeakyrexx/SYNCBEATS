@@ -22,6 +22,8 @@ export interface RoomState {
   chatMessages: ChatMessage[];
   hostId?: string;
   hostUsername?: string;
+  isPlaying: boolean; // Added for play/pause sync
+  lastPlaybackChangeBy?: string; // Added to track who initiated the last play/pause
 }
 
 export interface User {
