@@ -27,35 +27,42 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
+      let keepAliveInterval: NodeJS.Timeout | undefined = undefined;
       console.log(`[SSE /api/sync/${groupId}] Stream starting...`);
       try {
         addSSEClient(groupId, controller);
         
         let currentRoomState = getRoomState(groupId);
         if (!currentRoomState) {
-          console.log(`[SSE /api/sync/${groupId}] Room not found, initializing.`);
+          console.warn(`[SSE /api/sync/${groupId}] Room not found after addSSEClient, re-initializing. This might indicate an issue.`);
           currentRoomState = initializeRoom(groupId);
         }
         
+        if (!currentRoomState) {
+            // This should be virtually impossible if initializeRoom works
+            throw new Error("Failed to get or initialize room state.");
+        }
+
         const initialDataString = JSON.stringify(currentRoomState);
+        console.log(`[SSE /api/sync/${groupId}] Prepared initial data string (first 100 chars): ${initialDataString.substring(0,100)}...`);
         const initialData = `data: ${initialDataString}\n\n`;
-        console.log(`[SSE /api/sync/${groupId}] Sending initial data:`, initialDataString.substring(0,100) + "...");
-        controller.enqueue(new TextEncoder().encode(initialData));
-        console.log(`[SSE /api/sync/${groupId}] Initial data enqueued.`);
         
-        const keepAliveInterval = setInterval(() => {
+        controller.enqueue(new TextEncoder().encode(initialData));
+        console.log(`[SSE /api/sync/${groupId}] Initial data enqueued successfully.`);
+        
+        keepAliveInterval = setInterval(() => {
           try {
             if (controller.desiredSize === null || controller.desiredSize > 0) {
               // console.log(`[SSE /api/sync/${groupId}] Sending keep-alive.`);
               controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
             } else {
               console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null, closing keep-alive. Size: ${controller.desiredSize}`);
-              clearInterval(keepAliveInterval);
-              removeSSEClient(groupId, controller); // Attempt cleanup
+              if (keepAliveInterval) clearInterval(keepAliveInterval);
+              removeSSEClient(groupId, controller); 
             }
           } catch (e) {
             console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
-            clearInterval(keepAliveInterval);
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
             removeSSEClient(groupId, controller);
             try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
           }
@@ -64,22 +71,24 @@ export async function GET(
 
         request.signal.addEventListener('abort', () => {
           console.log(`[SSE /api/sync/${groupId}] Request aborted, cleaning up.`);
-          clearInterval(keepAliveInterval);
+          if (keepAliveInterval) clearInterval(keepAliveInterval);
           removeSSEClient(groupId, controller);
           try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
         });
-      } catch (e) {
-        console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, e);
+      } catch (e: unknown) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, error.message, error.stack);
+        if (keepAliveInterval) clearInterval(keepAliveInterval);
         removeSSEClient(groupId, controller); // Attempt cleanup
         try {
           if (controller.desiredSize !== null) { 
-             controller.error(e instanceof Error ? e : new Error(String(e)));
+             controller.error(error); // Signal error on the stream
           }
         } catch (errSignalError) {
             console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
         }
         try { 
-          if (controller.desiredSize !== null) { 
+          if (controller.desiredSize !== null && controller.desiredSize !== undefined) { // extra check for desiredSize
             controller.close(); 
           }
         } catch (closeErr) {
@@ -89,11 +98,10 @@ export async function GET(
     },
     cancel(_reason) {
       console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
-      // Cleanup is primarily handled by the 'abort' event on request.signal
-      // but ensure controller is removed if cancel is called directly.
-      // removeSSEClient(groupId, controller); // This line is problematic as controller might not be defined or accessible here.
-                                           // The start method's controller is scoped there.
-                                           // Proper cleanup relies on request.signal.abort.
+      // Cleanup for `keepAliveInterval` here is tricky due to scope. 
+      // It primarily relies on the 'abort' event on request.signal.
+      // `removeSSEClient` should be called with the correct controller instance if possible,
+      // but typically cancellation from client aborts the request signal.
     }
   });
 
@@ -120,6 +128,7 @@ export async function POST(
 ) {
   const groupId = params.groupId?.toUpperCase();
   if (!groupId) {
+    console.error("[POST /api/sync/undefined] Missing groupId in POST request.");
     return NextResponse.json({ error: 'Missing groupId' }, { status: 400 });
   }
 
@@ -133,6 +142,7 @@ export async function POST(
     } else if (body.type === 'CHAT_MESSAGE') {
       const { message, userId, username } = body.payload as { message: string; userId: string; username: string };
       if (!message || !userId || !username) {
+        console.error(`[POST /api/sync/${groupId}] Missing message, userId, or username for CHAT_MESSAGE. Payload:`, body.payload);
         return NextResponse.json({ error: 'Missing message, userId, or username for CHAT_MESSAGE' }, { status: 400 });
       }
       
@@ -148,21 +158,20 @@ export async function POST(
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
-        // This case should ideally not be hit if addChatMessageToRoom initializes room.
         console.error(`[POST /api/sync/${groupId}] Failed to add chat message, room store might be inconsistent.`);
         return NextResponse.json({ error: 'Failed to add chat message or room not found' }, { status: 500 });
       }
     } else {
+      console.warn(`[POST /api/sync/${groupId}] Invalid request type: ${body.type}`);
       return NextResponse.json({ error: 'Invalid request type' }, { status: 400 });
     }
 
   } catch (error) {
     console.error(`[POST /api/sync/${groupId}] Error processing POST:`, error);
-    if (error instanceof SyntaxError) { // Check if error is due to invalid JSON
+    if (error instanceof SyntaxError) { 
+        console.error(`[POST /api/sync/${groupId}] Invalid JSON in request body.`);
         return NextResponse.json({ error: 'Invalid JSON in request body' }, { status: 400 });
     }
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
-
-    
