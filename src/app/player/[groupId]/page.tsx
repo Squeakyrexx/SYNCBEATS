@@ -105,29 +105,29 @@ export default function PlayerPage() {
   }, [groupIdFromParams, toast, currentUser]);
 
   useEffect(() => {
+    console.log(`[PlayerPage] SSE useEffect triggered. groupIdFromParams: ${groupIdFromParams}`);
     if (!groupIdFromParams) {
+      console.log("[PlayerPage] No groupIdFromParams, setting isRoomLoading to false.");
       setIsRoomLoading(false);
       setSyncError("No Group ID provided. Please join or create a group.");
-      // router.push('/'); // Might be too aggressive, consider showing an error message page
       return;
     }
 
-    setIsRoomLoading(true);
+    setIsRoomLoading(true); // Set loading true at the start of an attempt
     setSyncError(null);
-    setRoomState(null); // Reset room state for new groupId
+    // setRoomState(null); // Reset room state for new groupId - this might be too aggressive if re-connecting
 
     console.log(`[PlayerPage] Attempting SSE connection for group: ${groupIdFromParams}`);
     const es = new EventSource(`/api/sync/${groupIdFromParams}`);
     eventSourceRef.current = es;
 
-    // Clear any existing timeout
     if (sseTimeoutRef.current) {
       clearTimeout(sseTimeoutRef.current);
+      sseTimeoutRef.current = null;
     }
 
-    // Set a timeout for the SSE connection
     sseTimeoutRef.current = setTimeout(() => {
-      if (isRoomLoading) { // Check if still loading
+      if (isRoomLoading) {
         console.warn(`[PlayerPage] SSE connection timed out for ${groupIdFromParams}`);
         toast({
           title: "Connection Timeout",
@@ -146,30 +146,42 @@ export default function PlayerPage() {
 
     es.onopen = () => {
       console.log(`[PlayerPage] SSE connection opened for: ${groupIdFromParams}`);
-      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
+      if (sseTimeoutRef.current) {
+        clearTimeout(sseTimeoutRef.current);
+        sseTimeoutRef.current = null;
+      }
       setIsRoomLoading(false);
       setSyncError(null);
     };
 
     es.onmessage = (event) => {
-      console.log(`[PlayerPage] SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "..."); // Log truncated data
-      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
+      console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "...");
+      if (sseTimeoutRef.current) {
+        clearTimeout(sseTimeoutRef.current);
+        sseTimeoutRef.current = null;
+      }
       try {
         const newRoomState: RoomState = JSON.parse(event.data);
         setRoomState(newRoomState);
-        setIsRoomLoading(false);
+        setIsRoomLoading(false); // Data received, loading finished
       } catch (error) {
         console.error("[PlayerPage] Error parsing SSE message:", error);
         setSyncError("Error processing room data.");
-        setIsRoomLoading(false); // Ensure loading stops even on parse error
+        setIsRoomLoading(false); // Error parsing, loading finished (with error)
       }
     };
 
     es.onerror = (errorEv) => {
       console.error(`[PlayerPage] EventSource error for group ${groupIdFromParams}:`, errorEv);
-      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
-      toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
-      setSyncError("Connection to the sync server failed. Changes might not be saved or seen by others.");
+      if (sseTimeoutRef.current) {
+        clearTimeout(sseTimeoutRef.current);
+        sseTimeoutRef.current = null;
+      }
+      // Avoid setting toast if it's a connection timeout, as timeout handler does that
+      if (!syncError?.includes("timed out")) {
+         toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
+      }
+      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others.");
       setIsRoomLoading(false);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -178,15 +190,17 @@ export default function PlayerPage() {
     };
 
     return () => {
-      console.log(`[PlayerPage] Cleaning up SSE for ${groupIdFromParams}`);
-      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
+      console.log(`[PlayerPage] Cleaning up SSE for ${groupIdFromParams}. Closing EventSource.`);
+      if (sseTimeoutRef.current) {
+        clearTimeout(sseTimeoutRef.current);
+        sseTimeoutRef.current = null;
+      }
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupIdFromParams, toast]); // Removed router, isRoomLoading. isRoomLoading in timeout closure is fine.
+  }, [groupIdFromParams, toast]);
 
 
   useEffect(() => {
@@ -237,6 +251,7 @@ export default function PlayerPage() {
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
+       console.log("[PlayerPage] Player ready, attempting to play video.");
        event.target.playVideo();
     }
   }, []);
@@ -271,20 +286,21 @@ export default function PlayerPage() {
     }
     const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
     if (playerDiv && window.YT && window.YT.Player) {
-      playerDiv.innerHTML = '';
+      playerDiv.innerHTML = ''; // Clear previous player if any
       try {
+        console.log(`[PlayerPage] Initializing YouTube player for video ID: ${videoId}`);
         playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
           videoId: videoId,
           playerVars: { autoplay: 1, enablejsapi: 1, controls: 1, modestbranding: 1, rel: 0 },
           events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange, 'onError': onPlayerError },
         });
       } catch (e) {
-        console.error("Error creating YouTube player:", e);
+        console.error("[PlayerPage] Error creating YouTube player:", e);
         toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
         playerRef.current = null;
       }
     } else if (!playerDiv) {
-      console.error(`Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
+      console.error(`[PlayerPage] Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
     }
     initializingPlayerRef.current = false;
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
@@ -293,20 +309,23 @@ export default function PlayerPage() {
     if (!youtubeApiReady || isRoomLoading || !roomState) return;
 
     if (currentPlayingSong) {
+        console.log(`[PlayerPage] Current playing song determined: ${currentPlayingSong.title}. Calling initializePlayer.`);
         initializePlayer(currentPlayingSong.id);
     } else {
+      console.log("[PlayerPage] No current playing song. Destroying player if exists.");
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
-      if (playerDiv) playerDiv.innerHTML = '';
+      if (playerDiv) playerDiv.innerHTML = ''; // Clear player content
       if (queue.length === 0) {
-        setSuggestedSongs([]);
+        setSuggestedSongs([]); // Clear suggestions if queue is empty
       }
     }
+    // Cleanup for suggestion debounce timer
     return () => { if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current); };
-  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]);
+  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]); // Added queue.length for suggestion clearing
 
 
   const handleSearch = async (e?: FormEvent<HTMLFormElement>) => {
@@ -316,7 +335,7 @@ export default function PlayerPage() {
         return;
     }
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]);
+    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]); // Clear suggestions on new search
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
@@ -348,16 +367,15 @@ export default function PlayerPage() {
   const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
     if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) {
         setSuggestedSongs([]);
+        if (apiKeyMissing) return; // Already handled by global apiKeyMissing state
         if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist)) {
-            if (YOUTUBE_API_KEY) {
-              toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
-            }
+            toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
         }
         return;
     }
     setIsLoadingSuggestions(true); setSuggestedSongs([]);
 
-    let suggestionQuery = songForSuggestions.artist;
+    let suggestionQuery = songForSuggestions.artist; // Default query
 
     try {
       const videoDetailsResponse = await fetch(
@@ -388,9 +406,9 @@ export default function PlayerPage() {
             suggestionQuery = `${songForSuggestions.artist} ${genreHint}`;
           }
         }
-      }
+      } // else, just proceed with artist-based query if details fetch fails
 
-      console.log("Constructed suggestion query:", suggestionQuery);
+      console.log("[PlayerPage] Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -413,12 +431,12 @@ export default function PlayerPage() {
         }))
         .filter(newSong =>
             !queue.find(qSong => qSong.id === newSong.id) &&
-            newSong.id !== songForSuggestions.id &&
-            newSong.id !== (currentPlayingSong?.id || '')
+            newSong.id !== songForSuggestions.id && // Don't suggest the same song
+            newSong.id !== (currentPlayingSong?.id || '') // Don't suggest currently playing song
         );
-      setSuggestedSongs(newSuggestions.slice(0, 5));
+      setSuggestedSongs(newSuggestions.slice(0, 5)); // Limit to 5 suggestions
     } catch (error) {
-        console.error("Error fetching suggestions:", error);
+        console.error("[PlayerPage] Error fetching suggestions:", error);
         toast({ title: "Suggestion Failed", description: "An unexpected error occurred while fetching suggestions.", variant: "destructive"});
     } finally {
         setIsLoadingSuggestions(false);
@@ -428,26 +446,29 @@ export default function PlayerPage() {
   const handleSelectSong = (song: Song) => {
     if (!song.id || !song.artist || !song.channelId) {
       toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID.", variant: "destructive" });
+      console.warn("[PlayerPage] Attempted to add song with incomplete data:", song);
       return;
     }
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
 
-    if (currentQueueIndex === -1 || newQueue.length === 1) {
-      newIndex = newQueue.length - 1;
+    // If queue was empty OR nothing was playing, make this the current song
+    if (currentQueueIndex === -1 || queue.length === 0) {
+      newIndex = newQueue.length - 1; // Index of the newly added song
     }
 
     updateServerRoomState({ queue: newQueue, currentQueueIndex: newIndex });
 
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
-    setSearchResults([]);
-    setSearchQuery('');
-    setSuggestedSongs([]); // Clear old suggestions when a new song is picked manually
+    setSearchResults([]); // Clear search results
+    setSearchQuery('');     // Clear search query input
 
+    // Fetch suggestions based on the newly added song
     if (song.id && song.artist && song.channelId) {
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
       suggestionDebounceTimer.current = setTimeout(() => handleFetchSuggestions(song), 1000);
     } else {
+        // This case should be caught by the check at the start of this function
         toast({title: "Cannot get suggestions", description: "Selected song is missing required info for suggestions.", variant: "destructive"});
     }
   };
@@ -478,7 +499,7 @@ export default function PlayerPage() {
       return;
     }
     updateServerRoomState({ queue: [], currentQueueIndex: -1 });
-    setSuggestedSongs([]);
+    setSuggestedSongs([]); // Clear suggestions as well
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
   };
 
@@ -532,11 +553,12 @@ export default function PlayerPage() {
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4">
         <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
         <p className="text-lg text-muted-foreground">Loading room data for: {groupIdFromParams || "..."}</p>
+        <p className="text-xs text-muted-foreground mt-2">(If this persists, try refreshing or check console)</p>
       </div>
     );
   }
 
-  if (syncError && !roomState) { // Show full page error only if roomState is also null
+  if (syncError && !roomState) {
     return (
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4 text-center">
         <WifiOff className="h-16 w-16 text-destructive mb-4" />
@@ -591,7 +613,7 @@ export default function PlayerPage() {
                     </AlertDescription>
                 </Alert>
             )}
-            {syncError && roomState && ( // Show inline error if roomState is partially available
+            {syncError && roomState && (
               <Alert variant="destructive" className="mb-4">
                 <WifiOff className="h-4 w-4" />
                 <AlertTitle>Connection Issue</AlertTitle>
@@ -616,7 +638,7 @@ export default function PlayerPage() {
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
-                                <ListMusic className="h-4 w-4"/> <span className="ml-2">Stop & Clear</span>
+                                <ListMusic /> <span className="ml-2">Stop & Clear</span>
                             </Button>
                         </TooltipTrigger>
                         {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("stop player and clear queue")}</p></TooltipContent>}
@@ -625,7 +647,7 @@ export default function PlayerPage() {
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <Button variant="secondary" onClick={handleSkipToNext} disabled={!isCurrentUserHost}>
-                                    <SkipForward className="h-4 w-4"/> <span className="ml-2">Skip</span>
+                                    <SkipForward /> <span className="ml-2">Skip</span>
                                 </Button>
                             </TooltipTrigger>
                             {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("skip songs")}</p></TooltipContent>}
@@ -646,7 +668,7 @@ export default function PlayerPage() {
           </div>
 
           {(queue.length > 0 && upNextQueue.length > 0) && (
-            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]"> {/* Adjusted max-height */}
+            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]">
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
@@ -769,3 +791,5 @@ export default function PlayerPage() {
     </TooltipProvider>
   );
 }
+
+    

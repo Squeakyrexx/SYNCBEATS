@@ -21,7 +21,7 @@ export default function CreateGroupPage() {
   const generateNewGroupCode = useCallback(() => {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     setGroupCode(code);
-    setCopied(false); // Reset copied state when new code is generated
+    setCopied(false); 
     return code;
   }, []);
 
@@ -60,10 +60,12 @@ export default function CreateGroupPage() {
       });
       return;
     }
-    if (isNavigating) return; // Prevent double-clicks
+    if (isNavigating) return; 
 
     setIsNavigating(true);
+    console.log(`[CreatePage] Navigating to player with group code: ${groupCode}`);
     // The room state will be managed by the in-memory store when the player page connects.
+    // No explicit creation step needed here for the in-memory store.
     router.push(`/player/${groupCode}`);
     // setIsNavigating will effectively be reset when the component unmounts on navigation
   };
@@ -109,3 +111,5 @@ export default function CreateGroupPage() {
     </main>
   );
 }
+
+    

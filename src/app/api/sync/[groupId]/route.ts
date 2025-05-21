@@ -17,8 +17,11 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { groupId: string } }
 ) {
-  const groupId = params.groupId?.toUpperCase(); // Ensure consistent casing
+  const groupId = params.groupId?.toUpperCase();
+  console.log(`[SSE /api/sync/${groupId}] Received GET request.`);
+
   if (!groupId) {
+    console.log(`[SSE /api/sync/undefined] Missing groupId in GET request.`);
     return new Response('Missing groupId', { status: 400 });
   }
 
@@ -33,6 +36,7 @@ export async function GET(
           console.log(`[SSE /api/sync/${groupId}] Room not found, initializing.`);
           currentRoomState = initializeRoom(groupId);
         }
+        
         const initialDataString = JSON.stringify(currentRoomState);
         const initialData = `data: ${initialDataString}\n\n`;
         console.log(`[SSE /api/sync/${groupId}] Sending initial data:`, initialDataString.substring(0,100) + "...");
@@ -45,15 +49,15 @@ export async function GET(
               // console.log(`[SSE /api/sync/${groupId}] Sending keep-alive.`);
               controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
             } else {
-              console.log(`[SSE /api/sync/${groupId}] Controller desiredSize not positive, closing keep-alive.`);
+              console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null, closing keep-alive. Size: ${controller.desiredSize}`);
               clearInterval(keepAliveInterval);
-              removeSSEClient(groupId, controller);
+              removeSSEClient(groupId, controller); // Attempt cleanup
             }
           } catch (e) {
             console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
             clearInterval(keepAliveInterval);
             removeSSEClient(groupId, controller);
-            try { controller.close(); } catch { /* ignore */ }
+            try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
           }
         }, 25000); 
 
@@ -62,11 +66,11 @@ export async function GET(
           console.log(`[SSE /api/sync/${groupId}] Request aborted, cleaning up.`);
           clearInterval(keepAliveInterval);
           removeSSEClient(groupId, controller);
-          try { controller.close(); } catch { /* ignore */ }
+          try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
         });
       } catch (e) {
         console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, e);
-        removeSSEClient(groupId, controller);
+        removeSSEClient(groupId, controller); // Attempt cleanup
         try {
           if (controller.desiredSize !== null) { 
              controller.error(e instanceof Error ? e : new Error(String(e)));
@@ -86,6 +90,10 @@ export async function GET(
     cancel(_reason) {
       console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
       // Cleanup is primarily handled by the 'abort' event on request.signal
+      // but ensure controller is removed if cancel is called directly.
+      // removeSSEClient(groupId, controller); // This line is problematic as controller might not be defined or accessible here.
+                                           // The start method's controller is scoped there.
+                                           // Proper cleanup relies on request.signal.abort.
     }
   });
 
@@ -110,14 +118,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { groupId: string } }
 ) {
-  const groupId = params.groupId?.toUpperCase(); // Ensure consistent casing
+  const groupId = params.groupId?.toUpperCase();
   if (!groupId) {
     return NextResponse.json({ error: 'Missing groupId' }, { status: 400 });
   }
 
   try {
     const body = await request.json() as PostBody;
-    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}`);
+    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}, UserID: ${body.userId}, Username: ${body.username}`);
 
     if (body.type === 'STATE_UPDATE') {
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
@@ -140,6 +148,8 @@ export async function POST(
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
+        // This case should ideally not be hit if addChatMessageToRoom initializes room.
+        console.error(`[POST /api/sync/${groupId}] Failed to add chat message, room store might be inconsistent.`);
         return NextResponse.json({ error: 'Failed to add chat message or room not found' }, { status: 500 });
       }
     } else {
@@ -148,9 +158,11 @@ export async function POST(
 
   } catch (error) {
     console.error(`[POST /api/sync/${groupId}] Error processing POST:`, error);
-    if (error instanceof SyntaxError) {
+    if (error instanceof SyntaxError) { // Check if error is due to invalid JSON
         return NextResponse.json({ error: 'Invalid JSON in request body' }, { status: 400 });
     }
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
+
+    
