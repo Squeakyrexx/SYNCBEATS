@@ -34,12 +34,12 @@ const PLAYER_CONTAINER_ID = 'youtube-player-container';
 export default function PlayerPage() {
   const params = useParams();
   const router = useRouter();
-  const groupIdFromParams = typeof params.groupId === 'string' ? params.groupId : '';
-  
-  const [groupId, setGroupId] = useState(groupIdFromParams);
   const { toast } = useToast();
   const authContext = useContext(AuthContext);
   const currentUser = authContext?.user;
+
+  // Directly use groupId from params. Fallback to empty string if not a string.
+  const groupId = typeof params.groupId === 'string' ? params.groupId : '';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -48,7 +48,7 @@ export default function PlayerPage() {
   const [apiKeyMissing, setApiKeyMissing] = useState(!YOUTUBE_API_KEY);
 
   const [roomState, setRoomState] = useState<RoomState | null>(null);
-  const [isRoomLoading, setIsRoomLoading] = useState(true);
+  const [isRoomLoading, setIsRoomLoading] = useState(true); // Initialize to true
   const [syncError, setSyncError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -72,13 +72,7 @@ export default function PlayerPage() {
   const chatMessages = roomState?.chatMessages || [];
   const hostId = roomState?.hostId;
   const hostUsername = roomState?.hostUsername;
-  const isCurrentUserHost = currentUser?.id === hostId;
-
-  useEffect(()=>{
-    if(groupIdFromParams && groupIdFromParams !== groupId){
-      setGroupId(groupIdFromParams)
-    }
-  }, [groupIdFromParams, groupId])
+  const isCurrentUserHost = !!currentUser && !!hostId && currentUser.id === hostId;
 
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
@@ -109,19 +103,17 @@ export default function PlayerPage() {
   }, [groupId, toast, currentUser]);
   
   useEffect(() => {
+    // If groupId is not yet available (e.g. params haven't resolved), bail out.
     if (!groupId) {
-      if(groupIdFromParams){ // if router params are available, but state not yet, set it
-        setGroupId(groupIdFromParams)
-      } else { // if no groupId at all, show error and potentially redirect
-        setIsRoomLoading(false);
-        setSyncError("No Group ID provided. Please join or create a group.");
-        toast({ title: "Error", description: "No Group ID in URL.", variant: "destructive" });
-        // Consider router.push('/') here after a delay or user action
-      }
+      setIsRoomLoading(false); // Stop loading if no groupId
+      setSyncError("No Group ID provided. Please join or create a group.");
+      toast({ title: "Error", description: "No Group ID in URL.", variant: "destructive" });
       return;
     }
-    setIsRoomLoading(true);
+
+    setIsRoomLoading(true); // Set loading before attempting connection
     setSyncError(null);
+    setRoomState(null); // Clear previous room state when groupId changes
 
     // console.log(`PlayerPage: Attempting to connect SSE for groupId: ${groupId}`);
     const es = new EventSource(`/api/sync/${groupId}`);
@@ -141,7 +133,8 @@ export default function PlayerPage() {
         setIsRoomLoading(false); 
       } catch (error) {
         console.error("Error parsing SSE message:", error);
-        // Potentially set syncError here too if parsing fails consistently
+        setSyncError("Error processing room data.");
+        setIsRoomLoading(false);
       }
     };
 
@@ -163,7 +156,7 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  }, [groupId, toast, router, groupIdFromParams]); // Added router and groupIdFromParams
+  }, [groupId, toast, router]); 
 
   useEffect(() => {
     if (chatScrollAreaRef.current) {
@@ -179,7 +172,7 @@ export default function PlayerPage() {
         title: "API Key Missing",
         description: "YouTube API key is not configured. Song search/playback may be disabled.",
         variant: "destructive",
-        duration: Infinity, // Keep this toast until resolved
+        duration: Infinity, 
       });
     }
   }, [apiKeyMissing, toast]);
@@ -193,7 +186,7 @@ export default function PlayerPage() {
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
-      apiLoadedRef.current = true; // Mark API script as loading/loaded
+      apiLoadedRef.current = true; 
       window.onYouTubeIframeAPIReady = () => {
         setYoutubeApiReady(true);
       };
@@ -201,11 +194,11 @@ export default function PlayerPage() {
   }, []);
 
   const playNextSongInQueue = useCallback(() => {
-    if (!isCurrentUserHost) return; // Only host advances the server queue
+    if (!isCurrentUserHost) return;
 
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
        updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
-    } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) { // At the end of queue
+    } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) { 
        toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
        updateServerRoomState({ currentQueueIndex: -1 }); 
     }
@@ -213,6 +206,7 @@ export default function PlayerPage() {
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
+      // Unconditionally try to play. Autoplay: 1 in playerVars should also help.
        event.target.playVideo();
     }
   }, []);
@@ -279,11 +273,10 @@ export default function PlayerPage() {
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) playerDiv.innerHTML = ''; 
-      if (queue.length === 0) { // Clear suggestions if queue is empty
+      if (queue.length === 0) { 
         setSuggestedSongs([]);
       }
     }
-    // Cleanup for suggestion debounce timer
     return () => { if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current); };
   }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]);
 
@@ -295,7 +288,7 @@ export default function PlayerPage() {
         return; 
     }
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]); // Clear suggestions on new search
+    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]); 
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
@@ -328,8 +321,7 @@ export default function PlayerPage() {
     if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) {
         setSuggestedSongs([]);
         if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist)) {
-            // console.warn("Cannot fetch suggestions: songForSuggestions is missing id, channelId, or artist.", songForSuggestions);
-            if (YOUTUBE_API_KEY) { // Only show toast if API key is generally available
+            if (YOUTUBE_API_KEY) { 
               toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
             }
         }
@@ -340,7 +332,6 @@ export default function PlayerPage() {
     let suggestionQuery = songForSuggestions.artist;
 
     try {
-      // Fetch video details to get genre hints
       const videoDetailsResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${songForSuggestions.id}&key=${YOUTUBE_API_KEY}`
       );
@@ -359,7 +350,6 @@ export default function PlayerPage() {
               }
             }
           }
-          // Fallback to tags if no topicCategory genre hint
           if (!genreHint && details.snippet && details.snippet.tags) {
             const commonGenres = ["pop", "rock", "hip hop", "electronic", "jazz", "classical", "r&b", "country", "folk", "metal", "reggae", "blues", "soul", "funk"];
             const foundGenreTag = details.snippet.tags.find((tag: string) => commonGenres.some(g => tag.toLowerCase().includes(g)));
@@ -370,9 +360,6 @@ export default function PlayerPage() {
             suggestionQuery = `${songForSuggestions.artist} ${genreHint}`;
           }
         }
-      } else {
-        // console.warn(`Failed to fetch video details for suggestions (song ID: ${songForSuggestions.id}). Status: ${videoDetailsResponse.status} ${videoDetailsResponse.statusText}`);
-        // Fallback to artist-only search if details fetch fails
       }
       
       // console.log("Constructed suggestion query:", suggestionQuery);
@@ -398,10 +385,10 @@ export default function PlayerPage() {
         }))
         .filter(newSong => 
             !queue.find(qSong => qSong.id === newSong.id) && 
-            newSong.id !== songForSuggestions.id && // Don't suggest the song itself
-            newSong.id !== (currentPlayingSong?.id || '') // Don't suggest the currently playing song
+            newSong.id !== songForSuggestions.id && 
+            newSong.id !== (currentPlayingSong?.id || '') 
         );
-      setSuggestedSongs(newSuggestions.slice(0, 5)); // Take top 5 unique suggestions
+      setSuggestedSongs(newSuggestions.slice(0, 5)); 
     } catch (error) { 
         console.error("Error fetching suggestions:", error);
         toast({ title: "Suggestion Failed", description: "An unexpected error occurred while fetching suggestions.", variant: "destructive"});
@@ -418,25 +405,21 @@ export default function PlayerPage() {
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
 
-    // If queue was empty or nothing was playing, set new song as current
     if (currentQueueIndex === -1 || newQueue.length === 1) {
-      newIndex = newQueue.length - 1; // Index of the newly added song
+      newIndex = newQueue.length - 1; 
     }
     
     updateServerRoomState({ queue: newQueue, currentQueueIndex: newIndex });
     
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
-    setSearchResults([]); // Clear search results after selection
-    setSearchQuery(''); // Clear search query
+    setSearchResults([]); 
+    setSearchQuery(''); 
 
-    // Fetch suggestions based on the newly added song
     if (song.id && song.artist && song.channelId) {
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
       suggestionDebounceTimer.current = setTimeout(() => handleFetchSuggestions(song), 1000);
     } else {
-        // This case should be caught by the initial check in this function
-        // console.warn("Cannot fetch suggestions, selected song is missing id, artist, or channelId", song);
-        toast({title: "Cannot get suggestions", description: "Selected song is missing required info.", variant: "destructive"});
+        toast({title: "Cannot get suggestions", description: "Selected song is missing required info for suggestions.", variant: "destructive"});
     }
   };
 
@@ -505,7 +488,7 @@ export default function PlayerPage() {
         const errorData = await response.json();
         toast({ title: "Chat Error", description: errorData.error || "Failed to send message.", variant: "destructive" });
       } else {
-        setNewMessage(''); // Clear input on success
+        setNewMessage(''); 
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to send chat message.", variant: "destructive" });
@@ -524,7 +507,7 @@ export default function PlayerPage() {
     );
   }
   
-  if (syncError) {
+  if (syncError && !roomState) { // Only show full error page if roomState is also null
     return (
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4 text-center">
         <WifiOff className="h-16 w-16 text-destructive mb-4" />
@@ -579,6 +562,16 @@ export default function PlayerPage() {
                     </AlertDescription>
                 </Alert>
             )}
+            {syncError && roomState && ( // Show a less intrusive sync error if roomState is partially available
+              <Alert variant="destructive" className="mb-4">
+                <WifiOff className="h-4 w-4" />
+                <AlertTitle>Connection Issue</AlertTitle>
+                <AlertDescription>
+                  {syncError} Updates might be delayed or not working.
+                  <Button variant="link" size="sm" onClick={() => window.location.reload()} className="p-0 h-auto ml-1 text-destructive-foreground underline">Refresh?</Button>
+                </AlertDescription>
+              </Alert>
+            )}
             {currentPlayingSong ? (
               <Card className="shadow-xl flex flex-col bg-card h-full">
                 <CardHeader>
@@ -587,7 +580,6 @@ export default function PlayerPage() {
                 </CardHeader>
                 <CardContent className="flex-grow flex items-center justify-center p-0 md:p-2">
                   <div id={PLAYER_CONTAINER_ID} className="aspect-video w-full bg-black rounded-md overflow-hidden">
-                     {/* YouTube player will be injected here */}
                   </div>
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
@@ -700,7 +692,6 @@ export default function PlayerPage() {
             </Card> 
           )}
           
-          {/* Chat Section */}
           <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
             <CardHeader>
               <CardTitle className="text-card-foreground flex items-center gap-2">
@@ -715,7 +706,7 @@ export default function PlayerPage() {
                   )}
                   {chatMessages.map((chat) => (
                     <div key={chat.id} className="text-sm">
-                      <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1" />}</span> 
+                       <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1 text-amber-400" />}</span> 
                       <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.username}: </span>
                       <span className="text-foreground break-words">{chat.message}</span>
                       <p className="text-xs text-muted-foreground/70 mt-0.5">
@@ -749,3 +740,6 @@ export default function PlayerPage() {
     </TooltipProvider>
   );
 }
+
+
+    
