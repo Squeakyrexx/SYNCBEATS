@@ -71,6 +71,7 @@ export default function PlayerPage() {
 
   const queue = roomState?.queue || [];
   const currentQueueIndex = roomState?.currentQueueIndex ?? -1;
+  
   const currentPlayingSong = currentQueueIndex !== -1 && queue.length > 0 && currentQueueIndex < queue.length && queue[currentQueueIndex]
     ? queue[currentQueueIndex]
     : null;
@@ -88,6 +89,7 @@ export default function PlayerPage() {
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
     if (!groupIdFromParams) return;
+    console.log(`[PlayerPage updateServerRoomState] Sending update to server:`, newState);
     try {
       const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
         type: 'STATE_UPDATE',
@@ -106,6 +108,8 @@ export default function PlayerPage() {
       if (!response.ok) {
         const errorData = await response.json();
         toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
+      } else {
+        console.log(`[PlayerPage updateServerRoomState] Server update successful for:`, newState);
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
@@ -160,7 +164,7 @@ export default function PlayerPage() {
         sseTimeoutRef.current = null;
       }
       setSyncError(null); 
-      setIsRoomLoading(false); 
+      // setIsRoomLoading(false); // Initial data will set this after parsing
 
       if (currentUser && !announcedPresenceRef.current) {
         console.log(`[PlayerPage] SSE opened, announcing presence for user: ${currentUser.username} in group ${groupIdFromParams}`);
@@ -195,11 +199,11 @@ export default function PlayerPage() {
         const newRoomState: RoomState = JSON.parse(event.data);
         console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
         setRoomState(newRoomState);
-        setIsRoomLoading(false); 
         setSyncError(null); 
       } catch (error) {
         console.error("[PlayerPage] Error parsing SSE message:", error, "Raw data:", event.data);
         setSyncError("Error processing room data.");
+      } finally {
         setIsRoomLoading(false); 
       }
     };
@@ -210,10 +214,13 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      if (!syncError || !syncError.includes("timed out")) { 
+      let errorMsg = "Connection to the sync server failed. Changes might not be saved or seen by others.";
+      if (syncError && syncError.includes("timed out")) {
+          errorMsg = syncError; // Preserve timeout message
+      } else {
          toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
       }
-      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others."); 
+      setSyncError(errorMsg); 
       setIsRoomLoading(false);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -232,8 +239,7 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupIdFromParams, currentUser, router]); 
+  }, [groupIdFromParams, currentUser, router, toast]); // Removed isRoomLoading, added toast
 
 
   useEffect(() => {
@@ -257,15 +263,18 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
+      console.log("[PlayerPage YouTubeAPIEffect] YouTube API already loaded (window.YT.Player exists).");
       setYoutubeApiReady(true);
       return;
     }
     if (typeof window !== 'undefined' && !apiLoadedRef.current) {
+      console.log("[PlayerPage YouTubeAPIEffect] Loading YouTube Iframe API script.");
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
       apiLoadedRef.current = true;
       window.onYouTubeIframeAPIReady = () => {
+        console.log("[PlayerPage YouTubeAPIEffect] window.onYouTubeIframeAPIReady fired.");
         setYoutubeApiReady(true);
       };
     }
@@ -287,6 +296,8 @@ export default function PlayerPage() {
     const player = event.target;
     if (player && typeof player.getPlayerState === 'function' && typeof player.playVideo === 'function') {
         const currentState = player.getPlayerState();
+        // If server says it should be playing OR if video is unstarted (-1) or cued (5)
+        // try to play it. This helps ensure autoplay if `autoplay:1` in playerVars isn't enough.
         if (serverIsPlaying || currentState === -1 || currentState === window.YT.PlayerState.CUED ) {
             if (serverIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
                  console.log("[PlayerPage onPlayerReady] Player ready, server says playing or video cued. Attempting to play.");
@@ -301,7 +312,7 @@ export default function PlayerPage() {
             }
         }
     }
-  }, [serverIsPlaying]);
+  }, [serverIsPlaying]); // Depends on serverIsPlaying to decide initial action
 
   const onPlayerError = useCallback((event: any) => {
     console.error("[PlayerPage onPlayerError] YouTube Player Error:", event.data);
@@ -333,20 +344,24 @@ export default function PlayerPage() {
       newIsPlayingState = false;
     } else if (playerState === window.YT.PlayerState.ENDED) {
       if (isCurrentUserHost && currentUser) { 
+        console.log("[PlayerPage onPlayerStateChange] Song ended, host playing next.");
         playNextSongInQueue();
       }
       return; 
     }
 
     if (newIsPlayingState !== undefined) {
-      console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}.`);
+      console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Current serverIsPlaying: ${serverIsPlaying}`);
+      // Send update to server regardless of serverIsPlaying, let server be source of truth.
+      // lastPlaybackChangeBy handles loop prevention.
       updateServerRoomState({ isPlaying: newIsPlayingState, lastPlaybackChangeBy: currentUser.id });
     }
-  }, [isCurrentUserHost, playNextSongInQueue, updateServerRoomState, currentUser]);
+  }, [isCurrentUserHost, playNextSongInQueue, updateServerRoomState, currentUser, serverIsPlaying]);
 
   const initializePlayer = useCallback((videoId: string) => {
     if (!youtubeApiReady || initializingPlayerRef.current) {
       if (!youtubeApiReady) console.warn("[PlayerPage InitializePlayer] YouTube API not ready.");
+      if(initializingPlayerRef.current) console.warn("[PlayerPage InitializePlayer] Player initialization already in progress.");
       return;
     }
     initializingPlayerRef.current = true;
@@ -374,16 +389,17 @@ export default function PlayerPage() {
       }
     } else if (!playerDiv) {
       console.error(`[PlayerPage InitializePlayer] Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
-    } else if (!youtubeApiReady) {
+    } else if (!youtubeApiReady) { // Redundant due to initial check, but good for clarity
       console.warn(`[PlayerPage InitializePlayer] YouTube API (window.YT.Player) not ready for player initialization.`);
     }
     initializingPlayerRef.current = false;
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
 
   useEffect(() => {
-    console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
+    console.log(`[PlayerPage PlayerEffect] Current state - youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
       if(playerRef.current && typeof playerRef.current.destroy === 'function' && !currentPlayingSong) {
+        console.log("[PlayerPage PlayerEffect] Conditions not met for player or no current song, destroying player if exists.");
         playerRef.current.destroy();
         playerRef.current = null;
         const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
@@ -395,23 +411,32 @@ export default function PlayerPage() {
     if (currentPlayingSong) {
       const currentVideoIdInPlayer = playerRef.current?.getVideoData?.()?.video_id;
       if (currentVideoIdInPlayer !== currentPlayingSong.id) {
-        console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
+        console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title} (ID: ${currentPlayingSong.id}). Player video ID is ${currentVideoIdInPlayer}. Initializing player.`);
         initializePlayer(currentPlayingSong.id);
+      } else {
+         console.log(`[PlayerPage PlayerEffect] Current playing song ${currentPlayingSong.title} already loaded in player.`);
       }
-    } else {
+    } else { // No currentPlayingSong
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        console.log("[PlayerPage PlayerEffect] No current song to play, destroying player instance.");
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) playerDiv.innerHTML = ''; 
+      console.log("[PlayerPage PlayerEffect] No current song, player container cleared.");
     }
   }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState]); 
 
   useEffect(() => {
-    if (!playerRef.current || !playerRef.current.getPlayerState || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) return;
+    if (!playerRef.current || typeof playerRef.current.getPlayerState !== 'function' || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) {
+        // console.log("[PlayerPage PlaySyncEffect] Conditions not met, returning early. Player:", !!playerRef.current, "RoomState:", !!roomState, "CurrentUser:", !!currentUser, "YT API:", !!(window.YT && window.YT.PlayerState));
+        return;
+    }
     
+    // Don't react to your own playback changes that are echoed from server
     if (roomState.lastPlaybackChangeBy === currentUser.id) {
+      // console.log("[PlayerPage PlaySyncEffect] Playback change was by current user, ignoring server update for play/pause.");
       return; 
     }
 
@@ -425,6 +450,8 @@ export default function PlayerPage() {
     } else if (!serverIsPlaying && localPlayerState === window.YT.PlayerState.PLAYING) {
       console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
       playerRef.current.pauseVideo();
+    } else {
+        // console.log(`[PlayerPage PlaySyncEffect] No action needed. serverIsPlaying: ${serverIsPlaying}, localPlayerState: ${localPlayerState}`);
     }
     
     const timer = setTimeout(() => {
@@ -433,7 +460,7 @@ export default function PlayerPage() {
 
     return () => clearTimeout(timer);
 
-  }, [serverIsPlaying, roomState?.lastPlaybackChangeBy, currentUser, roomState]);
+  }, [serverIsPlaying, roomState?.lastPlaybackChangeBy, currentUser, roomState]); // Removed currentPlayingSong as direct dependency, handled by player re-init
 
 
   const handleSearch = async (e?: FormEvent<HTMLFormElement>) => {
@@ -443,7 +470,12 @@ export default function PlayerPage() {
         return;
     }
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]); 
+    
+    setIsSearchLoading(true); 
+    setSearchResults([]); 
+    setSuggestedSongs([]); // Clear suggestions on new search
+
+    console.log(`[PlayerPage handleSearch] Searching for: ${searchQuery}`);
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
@@ -463,6 +495,7 @@ export default function PlayerPage() {
         dataAiHint: "music video",
       }));
       setSearchResults(songs);
+      console.log(`[PlayerPage handleSearch] Found ${songs.length} songs for query: ${searchQuery}`);
       if (songs.length === 0) toast({ title: "No results", description: "Try a different search." });
     } catch (error) {
         console.error("Search error:", error);
@@ -472,24 +505,24 @@ export default function PlayerPage() {
     }
   };
 
-const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
+  const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
     if (apiKeyMissing) {
       if (toast) toast({ title: "API Key Missing", description: "Cannot fetch suggestions without YouTube API key.", variant: "destructive" });
-      setSuggestedSongs([]);
+      if (suggestedSongs.length > 0) setSuggestedSongs([]);
       return;
     }
     if (!songForSuggestions || !songForSuggestions.id || !songForSuggestions.artist) {
       console.log("[PlayerPage handleFetchSuggestions] No song for suggestions, or missing data. Clearing suggestions.");
-      setSuggestedSongs([]);
+      if (suggestedSongs.length > 0) setSuggestedSongs([]);
       return;
     }
 
-    console.log("[PlayerPage handleFetchSuggestions] Fetching suggestions based on song:", songForSuggestions.title);
+    console.log(`[PlayerPage handleFetchSuggestions] Fetching suggestions based on song: ${songForSuggestions.title} by ${songForSuggestions.artist}`);
     setIsLoadingSuggestions(true);
-    setSuggestedSongs([]);
+    setSuggestedSongs([]); // Clear previous suggestions
 
     try {
-      const suggestionQuery = songForSuggestions.artist; // Simplified query
+      const suggestionQuery = songForSuggestions.artist; 
       console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
 
       const searchResponse = await fetch(
@@ -507,7 +540,7 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
 
       const data = await searchResponse.json();
       const items = data.items || [];
-
+      
       if (items.length === 0 && searchResponse.ok && toast) {
           toast({ title: "No Suggestions Found", description: "The API returned no additional videos for this artist.", duration: 3000 });
       }
@@ -524,7 +557,7 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
         });
         
       setSuggestedSongs(newSuggestions.slice(0, 5)); 
-      console.log("[PlayerPage handleFetchSuggestions] Fetched suggestions:", newSuggestions.slice(0,5));
+      console.log(`[PlayerPage handleFetchSuggestions] Fetched ${newSuggestions.length} suggestions, displaying up to 5.`);
 
     } catch (error) {
         console.error("[PlayerPage handleFetchSuggestions] Error fetching suggestions:", error);
@@ -538,28 +571,32 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
   // Effect to fetch suggestions when currentPlayingSong changes
   useEffect(() => {
     if (apiKeyMissing) {
-      setSuggestedSongs([]);
+      if (suggestedSongs.length > 0) setSuggestedSongs([]); // Conditional set
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-      return;
+      return; // Exit early
     }
 
+    // If there's a song to get suggestions for
     if (currentPlayingSong && currentPlayingSong.id && currentPlayingSong.artist) {
       console.log(`[PlayerPage SuggestionEffect] Current song changed to: ${currentPlayingSong.title}. Debouncing suggestion fetch.`);
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
+      
+      const songForDebounce = currentPlayingSong; 
       suggestionDebounceTimer.current = setTimeout(() => {
-        handleFetchSuggestions(currentPlayingSong);
-      }, 1500); // Debounce for 1.5 seconds
-    } else {
-      // No current song, or current song is missing data
+        handleFetchSuggestions(songForDebounce); 
+      }, 1500);
+    } else { // No current song, or current song is missing data
       console.log("[PlayerPage SuggestionEffect] No current song or missing data. Clearing suggestions.");
-      setSuggestedSongs([]);
+      if (suggestedSongs.length > 0) setSuggestedSongs([]); // Conditional set - FIX FOR MAX UPDATE DEPTH
+      // Also clear any pending timeouts if we enter this branch
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
     }
 
+    // Cleanup function for the effect
     return () => {
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
     };
-  }, [currentPlayingSong, apiKeyMissing, handleFetchSuggestions]);
+  }, [currentPlayingSong, apiKeyMissing, handleFetchSuggestions]); // Removed suggestedSongs.length from deps
 
 
   const handleSelectSong = (song: Song) => {
@@ -574,17 +611,20 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
     if (!song.id || !song.artist || !song.channelId) {
       toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID. Suggestions might fail.", variant: "destructive" });
       console.warn("[PlayerPage handleSelectSong] Attempted to add song with incomplete data:", song);
+       // Optionally, still attempt to add if only channelId is missing but ID and artist are present for playback
+      if(!song.id || !song.artist) return;
     }
+
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
     let shouldStartPlaying = serverIsPlaying; 
     let newLastPlaybackChangeBy = roomState?.lastPlaybackChangeBy;
 
-    if (currentQueueIndex === -1 || queue.length === 0) {
+    if (currentQueueIndex === -1 || queue.length === 0) { // If queue was empty or finished
       newIndex = newQueue.length - 1; 
       shouldStartPlaying = true; 
       newLastPlaybackChangeBy = currentUser.id;
-      console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
+      console.log(`[PlayerPage handleSelectSong] Queue was empty or finished. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
     } else {
       console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentQueueIndex}. New song: ${song.title} added.`);
     }
@@ -599,6 +639,7 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
     setSearchResults([]); 
     setSearchQuery('');
+    // Suggestions will be triggered by currentPlayingSong change effect
   };
 
   const handleInviteFriend = () => {
@@ -701,7 +742,8 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
         const errorData = await response.json();
         toast({ title: "Permission Error", description: errorData.error || "Failed to update user permission.", variant: "destructive" });
       } else {
-        toast({ title: "Permissions Updated", description: `Song adding permission for user ${roomUsers.find(u=>u.id === targetUserId)?.username || targetUserId} set to ${newPermission ? 'allowed' : 'disallowed'}.` });
+        const targetUsername = roomUsers.find(u => u.id === targetUserId)?.username || targetUserId;
+        toast({ title: "Permissions Updated", description: `Song adding permission for user ${targetUsername} set to ${newPermission ? 'allowed' : 'disallowed'}.` });
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to update user permission.", variant: "destructive" });
@@ -711,7 +753,10 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
   
-  const activeUsers = roomUsers; 
+  const activeUsers = roomUsers; // Temporarily show all users, not just active ones, for easier debugging.
+  // const ACTIVE_USER_TIMEOUT_MS = 90000; // 90 seconds
+  // const isUserActive = (lastSeen: number) => (Date.now() - lastSeen) < ACTIVE_USER_TIMEOUT_MS;
+  // const activeUsers = roomUsers.filter(user => isUserActive(user.lastSeen));
 
 
   if (isRoomLoading) {
@@ -969,6 +1014,7 @@ const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | nul
                 <CardContent className="flex-grow p-0 overflow-hidden">
                     <ScrollArea className="h-full max-h-[200px] px-4 pb-2">
                         <div className="space-y-3 py-2">
+                             {console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users)}
                             {activeUsers.length === 0 && (
                                 <p className="text-sm text-muted-foreground text-center py-4">No other participants currently active.</p>
                             )}
