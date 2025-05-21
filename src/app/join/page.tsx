@@ -20,25 +20,27 @@ export default function JoinGroupPage() {
   const handleJoinGroup = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmedCode = groupCodeInput.trim().toUpperCase();
-    if (!(trimmedCode.length > 0 && trimmedCode.length <= 10)) { // Basic validation
+    if (!(trimmedCode.length > 0 && trimmedCode.length <= 10)) {
       toast({
         title: "Invalid Code",
-        description: "Please enter a valid group code.",
+        description: "Please enter a valid group code (1-10 characters).",
         variant: "destructive",
       });
       return;
     }
 
     setIsJoining(true);
-    // No Firebase check, just navigate to the player page with the code
-    // The player page itself won't have shared state anymore.
+    // No backend check needed here to "validate" the group.
+    // The player page will attempt to connect to the sync API.
+    // If the room doesn't exist in the in-memory store, it will be initialized.
     router.push(`/player/${trimmedCode}`);
-    // We can give a generic toast or none, as we can't confirm group existence client-side without a backend.
+    
+    // We can give a generic toast or none.
     toast({
         title: "Joining...",
         description: `Attempting to join room ${trimmedCode}.`,
     });
-    // setIsJoining(false); // Navigation will unmount, so this might not be necessary or could be set in a timeout
+    // setIsJoining(false); // Navigation will unmount
   };
 
   return (
@@ -62,7 +64,7 @@ export default function JoinGroupPage() {
             />
             <Button type="submit" className="w-full text-lg py-3" disabled={!groupCodeInput.trim() || isJoining}>
               {isJoining && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-              {isJoining ? "Joining..." : "Join Group"} <LogIn className="mr-2 h-5 w-5" />
+              {isJoining ? "Joining..." : "Join Group"} <LogIn className="ml-2 h-5 w-5" />
             </Button>
           </CardContent>
         </form>

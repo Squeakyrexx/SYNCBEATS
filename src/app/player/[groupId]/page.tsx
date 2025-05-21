@@ -11,19 +11,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2 } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-
-interface Song {
-  id: string;
-  title: string;
-  artist: string;
-  channelId: string;
-  thumbnailUrl: string;
-  dataAiHint: string;
-}
+import type { Song, RoomState } from '@/types';
 
 declare global {
   interface Window {
@@ -47,10 +39,11 @@ export default function PlayerPage() {
   const [copiedInvite, setCopiedInvite] = useState(false);
   const [apiKeyMissing, setApiKeyMissing] = useState(!YOUTUBE_API_KEY);
 
-  // Local state for queue and current song since Firebase sync is removed
-  const [queue, setQueue] = useState<Song[]>([]);
-  const [currentQueueIndex, setCurrentQueueIndex] = useState<number>(-1);
-  // No isGroupLoading state needed as we don't fetch group data from Firebase
+  // Synced state (from in-memory store via SSE)
+  const [roomState, setRoomState] = useState<RoomState | null>(null);
+  const [isRoomLoading, setIsRoomLoading] = useState(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const playerRef = useRef<any | null>(null);
   const apiLoadedRef = useRef(false);
@@ -61,7 +54,74 @@ export default function PlayerPage() {
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const suggestionDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
-  const currentPlayingSong = currentQueueIndex !== -1 && queue && queue[currentQueueIndex] ? queue[currentQueueIndex] : null;
+  const queue = roomState?.queue || [];
+  const currentQueueIndex = roomState?.currentQueueIndex ?? -1;
+  const currentPlayingSong = currentQueueIndex !== -1 && queue.length > 0 && queue[currentQueueIndex]
+    ? queue[currentQueueIndex]
+    : null;
+
+  // Function to update server state
+  const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
+    if (!groupId) return;
+    try {
+      const response = await fetch(`/api/sync/${groupId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newState),
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
+      }
+      // State will be updated via SSE, no need to set it locally here
+    } catch (error) {
+      toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
+      console.error("Error updating server room state:", error);
+    }
+  }, [groupId, toast]);
+  
+  useEffect(() => {
+    if (!groupId) return;
+    setIsRoomLoading(true);
+    setSyncError(null);
+
+    const es = new EventSource(`/api/sync/${groupId}`);
+    eventSourceRef.current = es;
+
+    es.onopen = () => {
+      setIsRoomLoading(false); 
+      setSyncError(null);
+    };
+
+    es.onmessage = (event) => {
+      try {
+        const newRoomState: RoomState = JSON.parse(event.data);
+        setRoomState(newRoomState);
+        setIsRoomLoading(false); 
+      } catch (error) {
+        console.error("Error parsing SSE message:", error);
+        toast({ title: "Sync Error", description: "Received invalid data from server.", variant: "destructive" });
+      }
+    };
+
+    es.onerror = (_error) => {
+      console.error("EventSource failed for group " + groupId + ":", _error);
+      toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
+      setSyncError("Connection to the sync server failed. Changes might not be saved or seen by others.");
+      setIsRoomLoading(false);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, [groupId, toast]);
+
 
   useEffect(() => {
     if (!YOUTUBE_API_KEY && !apiKeyMissing) {
@@ -70,7 +130,7 @@ export default function PlayerPage() {
         title: "API Key Missing",
         description: "YouTube API key is not configured. Song search/playback may be disabled.",
         variant: "destructive",
-        duration: Infinity, // Keep it visible
+        duration: Infinity,
       });
     }
   }, [apiKeyMissing, toast]);
@@ -92,17 +152,17 @@ export default function PlayerPage() {
   }, []);
 
   const playNextSongInQueue = useCallback(() => {
-    if (queue && currentQueueIndex < queue.length - 1) {
-      setCurrentQueueIndex(currentQueueIndex + 1);
+    if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
+      updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
     } else {
       toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
-      setCurrentQueueIndex(-1);
+      updateServerRoomState({ currentQueueIndex: -1 }); // Signal end of queue
     }
-  }, [currentQueueIndex, queue, toast]);
+  }, [currentQueueIndex, queue, toast, updateServerRoomState]);
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
-      event.target.playVideo();
+       event.target.playVideo(); // Explicitly play when ready
     }
   }, []);
 
@@ -132,280 +192,278 @@ export default function PlayerPage() {
     }
     const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
     if (playerDiv && window.YT && window.YT.Player) {
-      playerDiv.innerHTML = '';
+      playerDiv.innerHTML = ''; 
       try {
         playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
           videoId: videoId,
-          playerVars: {
-            autoplay: 1,
-            enablejsapi: 1,
-            controls: 1,
-            modestbranding: 1,
-            rel: 0,
-          },
-          events: {
-            'onReady': onPlayerReady,
-            'onStateChange': onPlayerStateChange,
-            'onError': onPlayerError,
-          },
+          playerVars: { autoplay: 1, enablejsapi: 1, controls: 1, modestbranding: 1, rel: 0 },
+          events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange, 'onError': onPlayerError },
         });
       } catch (e) {
         console.error("Error creating YouTube player:", e);
-        toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" })
+        toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
+        playerRef.current = null; 
       }
     } else if (!playerDiv) {
       console.error(`Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
-    } else if (!(window.YT && window.YT.Player)) {
-      console.warn("YouTube Player API not fully loaded yet for initializePlayer.");
     }
     initializingPlayerRef.current = false;
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
 
   useEffect(() => {
-    if (!youtubeApiReady) return;
+    if (!youtubeApiReady || isRoomLoading || !roomState) return;
 
-    const songToPlay = currentQueueIndex !== -1 && queue && queue.length > 0 && queue[currentQueueIndex]
-      ? queue[currentQueueIndex]
-      : null;
-
-    if (songToPlay) {
-      initializePlayer(songToPlay.id);
-    } else {
+    if (currentPlayingSong) {
+      if (!playerRef.current || (playerRef.current.getVideoData && playerRef.current.getVideoData().video_id !== currentPlayingSong.id)) {
+        initializePlayer(currentPlayingSong.id);
+      }
+    } else { 
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
-      if (playerDiv) playerDiv.innerHTML = '';
-      if (!queue || queue.length === 0) {
+      if (playerDiv) playerDiv.innerHTML = ''; 
+      if (queue.length === 0) {
         setSuggestedSongs([]);
       }
     }
-
-    return () => {
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-    };
-  }, [youtubeApiReady, currentQueueIndex, queue, initializePlayer]);
+    return () => { if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current); };
+  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]);
 
 
   const handleSearch = async (e?: FormEvent<HTMLFormElement>) => {
     e?.preventDefault();
-    if (apiKeyMissing) {
-      toast({ title: "API Key Missing", description: "Cannot search.", variant: "destructive" });
-      return;
+    if (apiKeyMissing) { 
+        toast({ title: "API Key Missing", description: "Cannot search without YouTube API key.", variant: "destructive" });
+        return; 
     }
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    setIsSearchLoading(true);
-    setSearchResults([]);
-    setSuggestedSongs([]);
-
+    if (!searchQuery.trim()) { setSearchResults([]); return; }
+    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]);
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
       );
-      if (!response.ok) {
-        const errorData = await response.json();
-        toast({ title: "Search Error", description: errorData?.error?.message || `Status: ${response.status}`, variant: "destructive" });
-        setSearchResults([]);
-        setIsSearchLoading(false);
-        return;
+      if (!response.ok) { 
+        toast({ title: "Search Error", description: `API request failed: ${response.statusText}`, variant: "destructive"});
+        setIsSearchLoading(false); 
+        return; 
       }
-      const data = await response.json();
-      const items = data.items || [];
+      const data = await response.json(); const items = data.items || [];
       const songs: Song[] = items.map((item: any) => ({
-        id: item.id.videoId,
-        title: item.snippet.title,
-        artist: item.snippet.channelTitle,
-        channelId: item.snippet.channelId,
-        thumbnailUrl: item.snippet.thumbnails.default.url,
+        id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
+        channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url,
         dataAiHint: "music video",
       }));
       setSearchResults(songs);
       if (songs.length === 0) toast({ title: "No results", description: "Try a different search." });
-    } catch (error) {
-      toast({ title: "Search Error", description: "An unexpected error occurred.", variant: "destructive" });
-      setSearchResults([]);
-    } finally {
-      setIsSearchLoading(false);
+    } catch (error) { 
+        console.error("Search error:", error);
+        toast({ title: "Search Failed", description: "An unexpected error occurred during search.", variant: "destructive"});
+    } finally { 
+        setIsSearchLoading(false); 
     }
   };
 
   const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
-    if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId) {
-      setSuggestedSongs([]);
-      if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId)) {
-        console.warn("Cannot fetch suggestions: songForSuggestions is missing an ID or channelId.", songForSuggestions);
-         toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without song ID and channel ID.", variant: "destructive"});
-      }
-      return;
+    if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) {
+        setSuggestedSongs([]);
+        if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist)) {
+            console.warn("Cannot fetch suggestions: songForSuggestions is missing id, channelId, or artist.", songForSuggestions);
+            if (YOUTUBE_API_KEY) { // Only toast if API key is present, otherwise the API key missing toast is primary
+              toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
+            }
+        }
+        return;
     }
-    setIsLoadingSuggestions(true);
-    setSuggestedSongs([]);
-    let suggestionQuery = songForSuggestions.artist;
+    setIsLoadingSuggestions(true); setSuggestedSongs([]);
+    
+    let suggestionQuery = songForSuggestions.artist; // Default query
 
     try {
+      // Attempt to get genre clues from video details
       const videoDetailsResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${songForSuggestions.id}&key=${YOUTUBE_API_KEY}`
       );
+
       if (videoDetailsResponse.ok) {
         const videoData = await videoDetailsResponse.json();
         if (videoData.items && videoData.items.length > 0) {
-          const snippet = videoData.items[0].snippet;
-          const topicDetails = videoData.items[0].topicDetails;
+          const details = videoData.items[0];
           let genreHint = "";
-
-          if (topicDetails && topicDetails.topicCategories) {
-            const musicCategory = topicDetails.topicCategories.find((catUrl: string) =>
-              catUrl.toLowerCase().includes("music") && !catUrl.toLowerCase().includes("video_game_music")
-            );
-            if (musicCategory) genreHint = decodeURIComponent(musicCategory.substring(musicCategory.lastIndexOf('/') + 1).replace(/_/g, ' '));
-          }
-          if ((!genreHint || genreHint.toLowerCase() === "music") && snippet.tags && snippet.tags.length > 0) {
-            const specificGenreTag = snippet.tags.find((tag: string) => {
-              const lowerTag = tag.toLowerCase();
-              return (lowerTag.includes("pop") || lowerTag.includes("rock") || lowerTag.includes("hip hop") || lowerTag.includes("electronic") || lowerTag.includes("r&b") || lowerTag.includes("jazz") || lowerTag.includes("classical") || lowerTag.includes("soul") || lowerTag.includes("funk")) && !lowerTag.includes("soundtrack");
-            });
-            if (specificGenreTag) genreHint = specificGenreTag;
-            else if (!genreHint) {
-                const musicTag = snippet.tags.find((tag: string) => tag.toLowerCase().includes("music"));
-                if (musicTag) genreHint = musicTag;
+          if (details.topicDetails && details.topicDetails.topicCategories) {
+            const musicCategory = details.topicDetails.topicCategories.find((cat: string) => cat.includes("music") || cat.includes("Music"));
+            if (musicCategory) {
+              const genreMatch = musicCategory.match(/wiki\/(.*)/);
+              if (genreMatch && genreMatch[1]) {
+                genreHint = decodeURIComponent(genreMatch[1].replace(/_/g, " "));
+              }
             }
           }
-          if (genreHint && genreHint.toLowerCase() !== "music" && genreHint.trim().length > 0) {
-            suggestionQuery = `${songForSuggestions.artist} ${genreHint.replace(/ music$/i, '').trim()}`;
-          } else {
-            suggestionQuery = `${songForSuggestions.artist} music`;
+          if (!genreHint && details.snippet && details.snippet.tags) {
+            // Fallback: look for common genre keywords in tags
+            const commonGenres = ["pop", "rock", "hip hop", "electronic", "jazz", "classical", "r&b", "country", "folk", "metal", "reggae"];
+            const foundGenreTag = details.snippet.tags.find((tag: string) => commonGenres.some(g => tag.toLowerCase().includes(g)));
+            if (foundGenreTag) genreHint = foundGenreTag;
           }
-          console.log("Constructed suggestion query:", suggestionQuery);
+          if (genreHint) {
+            suggestionQuery = `${songForSuggestions.artist} ${genreHint}`;
+          }
         }
       } else {
-        suggestionQuery = `${songForSuggestions.artist} music`;
+        console.warn(`Failed to fetch video details for suggestions (song ID: ${songForSuggestions.id}). Status: ${videoDetailsResponse.status}`);
+        // Fallback to artist only if details fetch fails
       }
-
+      
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
+
       if (!searchResponse.ok) {
-        const errorData = await searchResponse.json();
-        toast({ title: "Suggestion Error", description: errorData?.error?.message || `Status: ${searchResponse.status}`, variant: "destructive" });
-        setSuggestedSongs([]); setIsLoadingSuggestions(false); return;
+        toast({ title: "Suggestion Error", description: `API request failed: ${searchResponse.statusText}`, variant: "destructive"});
+        setIsLoadingSuggestions(false); return;
       }
-      const data = await searchResponse.json();
-      const items = data.items || [];
+      const data = await searchResponse.json(); const items = data.items || [];
       if (items.length === 0 && searchResponse.ok) { 
-         toast({ title: "No Suggestions Found", description: "The API returned no additional videos from this artist/channel.", duration: 3000 });
+          toast({ title: "No Suggestions Found", description: "The API returned no additional videos from this artist/genre.", duration: 3000 });
       }
       const newSuggestions: Song[] = items
-        .map((item: any) => ({
-          id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
-          channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url,
-          dataAiHint: "music video",
+        .map((item: any) => ({ 
+            id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle, 
+            channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video", 
         }))
-        .filter(newSong =>
-            (!queue || !queue.find(qSong => qSong.id === newSong.id)) &&
+        .filter(newSong => 
+            !queue.find(qSong => qSong.id === newSong.id) && 
             newSong.id !== songForSuggestions.id &&
-            newSong.id !== (currentPlayingSong?.id || '')
+            newSong.id !== (currentPlayingSong?.id || '') 
         );
       setSuggestedSongs(newSuggestions.slice(0, 5));
-    } catch (error) {
-      toast({ title: "Suggestion Error", description: "Unexpected error fetching suggestions.", variant: "destructive" });
-      setSuggestedSongs([]);
-    } finally {
-      setIsLoadingSuggestions(false);
+    } catch (error) { 
+        console.error("Error fetching suggestions:", error);
+        toast({ title: "Suggestion Failed", description: "An unexpected error occurred while fetching suggestions.", variant: "destructive"});
+    } finally { 
+        setIsLoadingSuggestions(false); 
     }
   }, [apiKeyMissing, YOUTUBE_API_KEY, toast, queue, currentPlayingSong?.id]);
 
-
   const handleSelectSong = (song: Song) => {
-    setQueue(prevQueue => [...prevQueue, song]);
-
-    if (currentQueueIndex === -1) {
-      setCurrentQueueIndex(0); // Start playing if queue was empty
+    if (!song.id || !song.artist || !song.channelId) {
+      toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID.", variant: "destructive" });
+      return;
     }
+    const newQueue = [...queue, song];
+    let newIndex = currentQueueIndex;
+    if (currentQueueIndex === -1 && newQueue.length === 1) { // Play if queue was empty and this is the very first song
+      newIndex = 0; 
+    } else if (currentQueueIndex === -1 && newQueue.length > 1) { // If queue was empty but multiple songs added quickly (e.g. by host)
+      newIndex = 0; // Still start from the first actual song
+    }
+
+    updateServerRoomState({ queue: newQueue, currentQueueIndex: newIndex });
     
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
-    setSearchResults([]);
-    setSearchQuery('');
+    setSearchResults([]); setSearchQuery(''); // Clear search after selection
 
-    if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
     if (song.id && song.artist && song.channelId) {
+      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
       suggestionDebounceTimer.current = setTimeout(() => handleFetchSuggestions(song), 1000);
     } else {
-      toast({ title: "Suggestion Info Missing", description: "Missing song data (ID, artist, or channel ID) for suggestions.", variant: "destructive"});
+        toast({title: "Cannot get suggestions", description: "Selected song is missing ID, artist, or channel info.", variant: "destructive"});
     }
   };
 
   const handleInviteFriend = () => {
-    const inviteMessage = `Join my SyncBeats room! Code: ${groupId}\n${window.location.origin}/join?group=${groupId}\nOr open the player directly: ${window.location.href}`;
-    navigator.clipboard.writeText(inviteMessage).then(() => {
-      setCopiedInvite(true);
-      toast({ title: "Invite Copied!", description: "Invitation message copied." });
-      setTimeout(() => setCopiedInvite(false), 2000);
-    }).catch(err => {
-      toast({ title: "Error", description: "Failed to copy invite.", variant: "destructive" });
-    });
+    if (groupId) {
+      navigator.clipboard.writeText(window.location.href).then(() => {
+        setCopiedInvite(true);
+        toast({
+          title: "Invite Link Copied!",
+          description: "Share this link with your friends.",
+        });
+        setTimeout(() => setCopiedInvite(false), 2000);
+      }).catch(err => {
+        console.error("Failed to copy invite link: ", err);
+        toast({
+          title: "Error",
+          description: "Failed to copy invite link.",
+          variant: "destructive",
+        });
+      });
+    }
   };
 
   const handleStopAndClear = () => {
-    setQueue([]);
-    setCurrentQueueIndex(-1);
-    setSuggestedSongs([]);
+    updateServerRoomState({ queue: [], currentQueueIndex: -1 });
+    setSuggestedSongs([]); // Also clear suggestions
     toast({ title: "Player Stopped", description: "Queue cleared." });
   };
 
   const handleSkipToNext = () => {
-    if (queue && currentQueueIndex < queue.length - 1) {
-      setCurrentQueueIndex(currentQueueIndex + 1);
+    if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
+      updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
     } else {
       toast({ title: "End of Queue", description: "No more songs to skip to." });
     }
   };
+  
+  const upNextQueue = queue.slice(currentQueueIndex + 1);
 
-  const upNextQueue = queue && queue.length > 0 ? queue.slice(currentQueueIndex + 1) : [];
-
-  // No more isGroupLoading, page is ready once component mounts
-  // if (isGroupLoading) { ... } // Removed
+  if (isRoomLoading) {
+    return (
+      <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4">
+        <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
+        <p className="text-lg text-muted-foreground">Loading room data...</p>
+        <p className="text-sm text-muted-foreground">Group: {groupId}</p>
+      </div>
+    );
+  }
+  
+  if (syncError) {
+    return (
+      <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4 text-center">
+        <WifiOff className="h-16 w-16 text-destructive mb-4" />
+        <h1 className="text-2xl font-semibold mb-2">Connection Error</h1>
+        <p className="text-muted-foreground mb-4 max-w-md">{syncError}</p>
+        <Button onClick={() => window.location.reload()}>Try Refreshing</Button>
+        <Button variant="link" asChild className="mt-2">
+          <Link href="/">Back to Home</Link>
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-50 bg-card border-b border-border shadow-sm p-3">
         <div className="container mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Logo size="small" />
-            <Separator orientation="vertical" className="h-6" />
-            <div className="text-sm">
-              <span className="text-muted-foreground">Group Code: </span>
-              <span className="font-semibold text-primary">{groupId}</span>
-            </div>
+            <Logo size="small" /> <Separator orientation="vertical" className="h-6" />
+            <div className="text-sm"><span className="text-muted-foreground">Group: </span><span className="font-semibold text-primary">{groupId}</span></div>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={handleInviteFriend}>
-              {copiedInvite ? <Check className="mr-1.5 h-4 w-4" /> : <Share2 className="mr-1.5 h-4 w-4" />}
-              {copiedInvite ? 'Copied' : 'Invite'}
+              {copiedInvite ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />} 
+              <span className="ml-1">{copiedInvite ? 'Copied' : 'Invite'}</span>
             </Button>
             <Button variant="ghost" size="sm" onClick={() => router.push('/')}>
-              <LogOut className="mr-1.5 h-4 w-4" /> Leave Room
+                <LogOut className="h-4 w-4" /> <span className="ml-1">Leave</span>
             </Button>
           </div>
         </div>
       </header>
 
       <main className="container mx-auto p-4 flex-grow flex flex-col lg:flex-row gap-6">
-        {/* --- Left Panel: Player & Up Next Queue --- */}
+        {/* Left Panel: Player & Up Next */}
         <div className="lg:w-2/3 flex flex-col gap-4">
-          {/* Player Area */}
           <div className="flex-grow">
             {apiKeyMissing && !currentPlayingSong && (
-              <Alert variant="destructive" className="mb-4">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>YouTube API Key Missing</AlertTitle>
-                <AlertDescription>
-                  Set <code>NEXT_PUBLIC_YOUTUBE_API_KEY</code>. Song search/playback disabled.
-                </AlertDescription>
-              </Alert>
+                <Alert variant="destructive" className="mb-4">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>YouTube API Key Missing</AlertTitle>
+                    <AlertDescription>
+                    Please set the NEXT_PUBLIC_YOUTUBE_API_KEY environment variable. Song search and playback are disabled.
+                    </AlertDescription>
+                </Alert>
             )}
             {currentPlayingSong ? (
               <Card className="shadow-xl flex flex-col bg-card h-full">
@@ -415,18 +473,18 @@ export default function PlayerPage() {
                 </CardHeader>
                 <CardContent className="flex-grow flex items-center justify-center p-0 md:p-2">
                   <div id={PLAYER_CONTAINER_ID} className="aspect-video w-full bg-black rounded-md overflow-hidden">
-                    {/* YouTube player will be injected here */}
+                     {/* YouTube player will be injected here */}
                   </div>
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
                   <div className="flex w-full space-x-2">
                     <Button variant="outline" onClick={handleStopAndClear} className="flex-1">
-                      <ListMusic className="mr-2 h-4 w-4" /> Stop & Clear Queue
+                        <ListMusic className="mr-2 h-4 w-4"/> Stop & Clear
                     </Button>
                     {upNextQueue.length > 0 && (
-                      <Button variant="secondary" onClick={handleSkipToNext} className="flex-1">
-                        <SkipForward className="mr-2 h-4 w-4" /> Skip to Next
-                      </Button>
+                        <Button variant="secondary" onClick={handleSkipToNext} className="flex-1">
+                            <SkipForward className="mr-2 h-4 w-4"/> Skip
+                        </Button>
                     )}
                   </div>
                 </CardFooter>
@@ -436,31 +494,21 @@ export default function PlayerPage() {
                 <ListMusic className="h-16 w-16 text-muted-foreground mb-4" />
                 <CardTitle className="text-2xl mb-2 text-card-foreground">Start Your Listening Party</CardTitle>
                 <CardDescription className="text-muted-foreground">
-                  {apiKeyMissing ? "YouTube API Key is missing." : "Search for songs and add them to the group queue to begin."}
+                    {apiKeyMissing ? "YouTube API Key is missing. Playback disabled." : "Search and add songs to begin."}
                 </CardDescription>
               </Card>
             )}
           </div>
 
-          {/* Up Next Queue Section */}
-          {(queue && queue.length > 0 && upNextQueue.length > 0) && (
+          {(queue.length > 0 && upNextQueue.length > 0) && (
             <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-none">
-              <CardHeader>
-                <CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle>
-              </CardHeader>
+              <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
-                      <Card
-                        key={song.id + "-upnext-" + index}
-                        className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80"
-                      >
-                        <Image
-                          src={song.thumbnailUrl} alt={song.title} width={60} height={45}
-                          className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint}
-                          unoptimized={song.thumbnailUrl.includes('ytimg.com')}
-                        />
+                      <Card key={song.id + "-upnext-" + index} className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80">
+                        <Image src={song.thumbnailUrl} alt={song.title} width={60} height={45} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-sm truncate text-foreground" title={song.title}>{song.title}</p>
                           <p className="text-xs text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
@@ -474,25 +522,22 @@ export default function PlayerPage() {
           )}
         </div>
 
-        {/* --- Right Panel: Search & Suggestions --- */}
+        {/* Right Panel: Search & Suggestions */}
         <div className="lg:w-1/3 flex flex-col gap-4">
           <div className="space-y-3 bg-card p-4 rounded-lg shadow-lg">
             <h3 className="text-xl font-semibold text-foreground">Search Songs</h3>
             <form onSubmit={handleSearch} className="flex gap-2 items-center">
-              <Input
-                type="search" placeholder="Search artists or songs..." value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)} className="flex-grow"
-                aria-label="Search songs" disabled={apiKeyMissing || isSearchLoading}
-              />
-              <Button type="submit" size="icon" aria-label="Search" disabled={apiKeyMissing || isSearchLoading || !searchQuery.trim()}>
-                <Search className="h-5 w-5" />
-              </Button>
+              <Input type="search" placeholder="Search artists or songs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="flex-grow" disabled={apiKeyMissing || isSearchLoading} />
+              <Button type="submit" size="icon" aria-label="Search" disabled={apiKeyMissing || isSearchLoading || !searchQuery.trim()}><Search /></Button>
             </form>
-            {apiKeyMissing && !isSearchLoading && (
-              <Alert variant="destructive" className="mt-2">
-                <AlertTriangle className="h-4 w-4" /> <AlertTitle>API Key Missing</AlertTitle>
-                <AlertDescription>Search disabled.</AlertDescription>
-              </Alert>
+            {apiKeyMissing && !isSearchLoading && ( 
+                 <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>API Key Missing</AlertTitle>
+                    <AlertDescription>
+                    Search functionality is disabled.
+                    </AlertDescription>
+                </Alert>
             )}
           </div>
 
@@ -502,80 +547,38 @@ export default function PlayerPage() {
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-3">
-                    {isSearchLoading && searchResults.length === 0 && Array.from({ length: 3 }).map((_, index) => (
-                      <Card key={`skeleton-search-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
-                          <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" />
-                          <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div>
-                          <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" />
-                      </Card>
-                    ))}
-                    {!isSearchLoading && searchResults.map((song) => (
-                      <Card key={song.id + "-searchresult"}
-                        className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50"
-                        onClick={() => handleSelectSong(song)} tabIndex={0}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}
-                        aria-label={`Add ${song.title} by ${song.artist} to queue`}>
-                        <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p>
-                          <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
-                        </div>
-                        <Button variant="ghost" size="icon" aria-label={`Add ${song.title} to queue`}><PlayCircle className="h-6 w-6 text-primary" /></Button>
-                      </Card>
-                    ))}
+                    {isSearchLoading && searchResults.length === 0 && Array.from({ length: 3 }).map((_, index) => ( <Card key={`skeleton-search-${index}`} className="flex items-center p-3 gap-3 bg-muted/50"> <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" /> <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div> <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" /> </Card>))}
+                    {!isSearchLoading && searchResults.map((song) => ( <Card key={song.id + "-searchresult"} className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50" onClick={() => handleSelectSong(song)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}> <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} /> <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div> <Button variant="ghost" size="icon"><PlayCircle className="text-primary"/></Button> </Card> ))}
                   </div>
                 </ScrollArea>
               </CardContent>
             </Card>
           )}
 
-          {((isLoadingSuggestions || suggestedSongs.length > 0 || (queue && queue.length > 0 && !isLoadingSuggestions && suggestedSongs.length === 0))) && !apiKeyMissing && (
+          {((isLoadingSuggestions || suggestedSongs.length > 0 || (queue.length > 0 && !isLoadingSuggestions && suggestedSongs.length === 0))) && !apiKeyMissing && (
             <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
-              <CardHeader><CardTitle className="text-card-foreground flex items-center"><ThumbsUp className="mr-2 h-5 w-5 text-primary" />{isLoadingSuggestions ? "Loading Suggestions..." : "You Might Like"}</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="text-card-foreground flex items-center gap-2"><ThumbsUp className="text-primary"/>{isLoadingSuggestions ? "Loading Suggestions..." : "You Might Like"}</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-3">
-                    {isLoadingSuggestions && Array.from({ length: 2 }).map((_, index) => (
-                      <Card key={`skeleton-suggest-${index}`} className="flex items-center p-3 gap-3 bg-muted/50">
-                          <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" />
-                          <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div>
-                          <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" />
-                      </Card>
-                    ))}
-                    {!isLoadingSuggestions && suggestedSongs.map((song) => (
-                      <Card key={song.id + "-suggestion"}
-                        className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50"
-                        onClick={() => handleSelectSong(song)} tabIndex={0}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}
-                        aria-label={`Add ${song.title} by ${song.artist} to queue`}>
-                        <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p>
-                          <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
-                        </div>
-                        <Button variant="ghost" size="icon" aria-label={`Add ${song.title} to queue`}><PlayCircle className="h-6 w-6 text-primary" /></Button>
-                      </Card>
-                    ))}
-                    {!isLoadingSuggestions && suggestedSongs.length === 0 && queue && queue.length > 0 && (
-                       <div className="text-center py-4">
-                        <ThumbsUp className="h-10 w-10 text-muted-foreground mx-auto mb-2"/>
-                        <p className="text-sm text-muted-foreground">No new suggestions from this artist/genre.</p>
-                        <p className="text-xs text-muted-foreground">Try adding a different song.</p>
-                      </div>
-                    )}
+                    {isLoadingSuggestions && Array.from({ length: 2 }).map((_, index) => ( <Card key={`skeleton-suggest-${index}`} className="flex items-center p-3 gap-3 bg-muted/50"> <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" /> <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div> <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" /> </Card>))}
+                    {!isLoadingSuggestions && suggestedSongs.map((song) => ( <Card key={song.id + "-suggestion"} className="flex items-center p-3 gap-3 hover:bg-muted/70 hover:shadow-md transition-all cursor-pointer bg-muted/50" onClick={() => handleSelectSong(song)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && handleSelectSong(song)}> <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} /> <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div> <Button variant="ghost" size="icon"><PlayCircle className="text-primary"/></Button> </Card>))}
+                    {!isLoadingSuggestions && suggestedSongs.length === 0 && queue.length > 0 && ( <div className="text-center py-4 text-muted-foreground"> <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> <p className="text-sm">No new suggestions for this artist/genre.</p> <p className="text-xs">Try adding a different song to the queue.</p> </div> )}
                   </div>
                 </ScrollArea>
               </CardContent>
             </Card>
           )}
-          {(!queue || queue.length === 0) && suggestedSongs.length === 0 && !isLoadingSuggestions && !apiKeyMissing && (
-             <Card className="shadow-lg bg-card p-4 text-center">
-                <ThumbsUp className="h-10 w-10 text-muted-foreground mx-auto mb-2"/>
-                <p className="text-sm text-muted-foreground">Song suggestions appear here once you add songs to the queue.</p>
-            </Card>
+          {(queue.length === 0) && suggestedSongs.length === 0 && !isLoadingSuggestions && !apiKeyMissing && ( 
+            <Card className="shadow-lg bg-card p-4 text-center text-muted-foreground"> 
+                <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> 
+                <p className="text-sm">Add songs to the queue to see suggestions.</p> 
+            </Card> 
           )}
         </div>
       </main>
     </div>
   );
 }
+
+    

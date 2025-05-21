@@ -58,7 +58,8 @@ export default function CreateGroupPage() {
       return;
     }
     setIsNavigating(true);
-    // No Firebase interaction, just navigate
+    // No backend interaction needed here to "create" the group.
+    // The room state will be managed by the in-memory store when the player page connects.
     router.push(`/player/${groupCode}`);
   };
 
