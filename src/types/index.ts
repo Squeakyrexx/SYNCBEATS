@@ -8,9 +8,18 @@ export interface Song {
   dataAiHint: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  userId: string;
+  username: string;
+  message: string;
+  timestamp: number;
+}
+
 export interface RoomState {
   queue: Song[];
   currentQueueIndex: number;
+  chatMessages: ChatMessage[];
 }
 
 export interface User {

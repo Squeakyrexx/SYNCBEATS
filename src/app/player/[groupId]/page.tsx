@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useEffect, FormEvent, useRef, useCallback } from 'react';
+import { useState, useEffect, FormEvent, useRef, useCallback, useContext } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useParams, useRouter } from 'next/navigation';
@@ -11,11 +11,14 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import type { Song, RoomState } from '@/types';
+import type { Song, RoomState, ChatMessage } from '@/types';
+import { AuthContext } from '@/context/AuthContext';
+import { formatDistanceToNow } from 'date-fns';
+
 
 declare global {
   interface Window {
@@ -32,6 +35,8 @@ export default function PlayerPage() {
   const router = useRouter();
   const groupId = params.groupId as string;
   const { toast } = useToast();
+  const authContext = useContext(AuthContext);
+  const user = authContext?.user;
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -53,11 +58,15 @@ export default function PlayerPage() {
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const suggestionDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
+  const [newMessage, setNewMessage] = useState('');
+  const chatScrollAreaRef = useRef<HTMLDivElement>(null);
+
   const queue = roomState?.queue || [];
   const currentQueueIndex = roomState?.currentQueueIndex ?? -1;
   const currentPlayingSong = currentQueueIndex !== -1 && queue.length > 0 && queue[currentQueueIndex]
     ? queue[currentQueueIndex]
     : null;
+  const chatMessages = roomState?.chatMessages || [];
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
     if (!groupId) return;
@@ -65,7 +74,7 @@ export default function PlayerPage() {
       const response = await fetch(`/api/sync/${groupId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newState),
+        body: JSON.stringify({ type: 'STATE_UPDATE', payload: newState }),
       });
       if (!response.ok) {
         const errorData = await response.json();
@@ -97,7 +106,6 @@ export default function PlayerPage() {
         setIsRoomLoading(false); 
       } catch (error) {
         console.error("Error parsing SSE message:", error);
-        // toast({ title: "Sync Error", description: "Received invalid data from server.", variant: "destructive" });
       }
     };
 
@@ -118,6 +126,12 @@ export default function PlayerPage() {
       }
     };
   }, [groupId, toast]);
+
+  useEffect(() => {
+    if (chatScrollAreaRef.current) {
+      chatScrollAreaRef.current.scrollTo({ top: chatScrollAreaRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [chatMessages]);
 
 
   useEffect(() => {
@@ -242,7 +256,7 @@ export default function PlayerPage() {
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
       );
       if (!response.ok) { 
-        const errorData = await response.json().catch(() => ({})); // Try to get more details from body
+        const errorData = await response.json().catch(() => ({})); 
         const description = `API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || 'Check console for more details.'}`;
         toast({ title: "Search Error", description, variant: "destructive", duration: 7000});
         console.error("Search API error details:", errorData);
@@ -406,6 +420,37 @@ export default function PlayerPage() {
       toast({ title: "End of Queue", description: "No more songs to skip to." });
     }
   };
+
+  const handleSendChatMessage = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !user) {
+      if(!user) toast({ title: "Not Logged In", description: "You must be logged in to send messages.", variant: "destructive" });
+      return;
+    }
+    try {
+      const response = await fetch(`/api/sync/${groupId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'CHAT_MESSAGE',
+          payload: {
+            message: newMessage,
+            userId: user.id,
+            username: user.username,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        toast({ title: "Chat Error", description: errorData.error || "Failed to send message.", variant: "destructive" });
+      } else {
+        setNewMessage(''); // Clear input on success
+      }
+    } catch (error) {
+      toast({ title: "Network Error", description: "Failed to send chat message.", variant: "destructive" });
+      console.error("Error sending chat message:", error);
+    }
+  };
   
   const upNextQueue = queue.slice(currentQueueIndex + 1);
 
@@ -505,7 +550,7 @@ export default function PlayerPage() {
             <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-none">
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
-                <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
+                <ScrollArea className="h-full max-h-[300px] px-4 pb-4" viewportRef={chatScrollAreaRef}>
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card key={song.id + "-upnext-" + index} className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80">
@@ -523,7 +568,7 @@ export default function PlayerPage() {
           )}
         </div>
 
-        {/* Right Panel: Search & Suggestions */}
+        {/* Right Panel: Search, Suggestions & Chat */}
         <div className="lg:w-1/3 flex flex-col gap-4">
           <div className="space-y-3 bg-card p-4 rounded-lg shadow-lg">
             <h3 className="text-xl font-semibold text-foreground">Search Songs</h3>
@@ -576,12 +621,51 @@ export default function PlayerPage() {
                 <p className="text-sm">Add songs to the queue to see suggestions.</p> 
             </Card> 
           )}
+          
+          {/* Chat Section */}
+          <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
+            <CardHeader>
+              <CardTitle className="text-card-foreground flex items-center gap-2">
+                <MessageCircle className="text-primary" /> Group Chat
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex-grow p-0 overflow-hidden flex flex-col">
+              <ScrollArea className="h-full max-h-[300px] flex-grow px-4 pb-2" viewportRef={chatScrollAreaRef}>
+                <div className="space-y-3 py-2">
+                  {chatMessages.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">No messages yet. Say hi!</p>
+                  )}
+                  {chatMessages.map((chat) => (
+                    <div key={chat.id} className="text-sm">
+                      <span className="font-semibold text-primary">{chat.username}: </span>
+                      <span className="text-foreground break-words">{chat.message}</span>
+                      <p className="text-xs text-muted-foreground/70 mt-0.5">
+                        {formatDistanceToNow(new Date(chat.timestamp), { addSuffix: true })}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </CardContent>
+            <CardFooter className="p-2 border-t border-border">
+              <form onSubmit={handleSendChatMessage} className="flex w-full gap-2">
+                <Input 
+                  type="text" 
+                  placeholder={user ? "Type a message..." : "Log in to chat"}
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  className="flex-grow"
+                  disabled={!user || authContext?.isLoading}
+                />
+                <Button type="submit" size="icon" aria-label="Send message" disabled={!user || authContext?.isLoading || !newMessage.trim()}>
+                  <Send />
+                </Button>
+              </form>
+            </CardFooter>
+          </Card>
+
         </div>
       </main>
     </div>
   );
 }
-
-    
-
-    

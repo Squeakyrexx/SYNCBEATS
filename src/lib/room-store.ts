@@ -1,16 +1,19 @@
 
-import type { Song, RoomState } from '@/types';
+import type { RoomState, ChatMessage } from '@/types';
 
 // Map<groupId, RoomState>
 const roomStates = new Map<string, RoomState>();
 // Map<groupId, Set<ReadableStreamDefaultController>>
 const roomSSEClients = new Map<string, Set<ReadableStreamDefaultController>>();
 
+export const MAX_CHAT_MESSAGES = 100;
+
 export function initializeRoom(groupId: string): RoomState {
   if (!roomStates.has(groupId)) {
     const initialState: RoomState = {
       queue: [],
       currentQueueIndex: -1,
+      chatMessages: [],
     };
     roomStates.set(groupId, initialState);
     if (!roomSSEClients.has(groupId)) {
@@ -27,6 +30,21 @@ export function getRoomState(groupId: string): RoomState | undefined {
   return roomStates.get(groupId);
 }
 
+export function addChatMessageToRoom(groupId: string, chatMessage: ChatMessage): RoomState | undefined {
+  let currentRoom = roomStates.get(groupId);
+  if (!currentRoom) {
+    currentRoom = initializeRoom(groupId);
+  }
+  
+  const newChatMessages = [...currentRoom.chatMessages, chatMessage].slice(-MAX_CHAT_MESSAGES);
+  const updatedRoom: RoomState = { ...currentRoom, chatMessages: newChatMessages };
+  
+  roomStates.set(groupId, updatedRoom);
+  broadcastRoomUpdate(groupId, updatedRoom);
+  return updatedRoom;
+}
+
+
 export function updateRoomStateAndBroadcast(groupId: string, newState: Partial<RoomState>): RoomState {
   let currentRoom = roomStates.get(groupId);
   if (!currentRoom) {
@@ -36,7 +54,13 @@ export function updateRoomStateAndBroadcast(groupId: string, newState: Partial<R
     // console.log(`Updating existing room ${groupId}. Current state:`, currentRoom, "New partial state:", newState);
   }
 
-  const updatedRoom = { ...currentRoom, ...newState };
+  // Ensure chatMessages isn't accidentally overwritten by a partial update that doesn't include it
+  const updatedRoom = { 
+    ...currentRoom, 
+    ...newState,
+    chatMessages: newState.chatMessages || currentRoom.chatMessages // Preserve existing chat if not in newState
+  };
+  
   roomStates.set(groupId, updatedRoom);
   // console.log(`Room ${groupId} updated. New state:`, updatedRoom);
   broadcastRoomUpdate(groupId, updatedRoom);
