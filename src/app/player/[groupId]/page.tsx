@@ -38,8 +38,7 @@ export default function PlayerPage() {
   const authContext = useContext(AuthContext);
   const currentUser = authContext?.user;
 
-  // Directly use groupId from params. Fallback to empty string if not a string.
-  const groupId = typeof params.groupId === 'string' ? params.groupId : '';
+  const groupIdFromParams = typeof params.groupId === 'string' ? params.groupId : '';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -48,7 +47,7 @@ export default function PlayerPage() {
   const [apiKeyMissing, setApiKeyMissing] = useState(!YOUTUBE_API_KEY);
 
   const [roomState, setRoomState] = useState<RoomState | null>(null);
-  const [isRoomLoading, setIsRoomLoading] = useState(true); // Initialize to true
+  const [isRoomLoading, setIsRoomLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -76,7 +75,7 @@ export default function PlayerPage() {
 
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
-    if (!groupId) return;
+    if (!groupIdFromParams) return;
     try {
       const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
         type: 'STATE_UPDATE',
@@ -87,7 +86,7 @@ export default function PlayerPage() {
         requestBody.username = currentUser.username;
       }
 
-      const response = await fetch(`/api/sync/${groupId}`, {
+      const response = await fetch(`/api/sync/${groupIdFromParams}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -100,34 +99,31 @@ export default function PlayerPage() {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
       console.error("Error updating server room state:", error);
     }
-  }, [groupId, toast, currentUser]);
+  }, [groupIdFromParams, toast, currentUser]);
   
   useEffect(() => {
-    // If groupId is not yet available (e.g. params haven't resolved), bail out.
-    if (!groupId) {
-      setIsRoomLoading(false); // Stop loading if no groupId
+    if (!groupIdFromParams) {
+      setIsRoomLoading(false);
       setSyncError("No Group ID provided. Please join or create a group.");
       toast({ title: "Error", description: "No Group ID in URL.", variant: "destructive" });
+      router.push('/'); // Redirect if no group ID
       return;
     }
 
-    setIsRoomLoading(true); // Set loading before attempting connection
+    setIsRoomLoading(true);
     setSyncError(null);
-    setRoomState(null); // Clear previous room state when groupId changes
+    setRoomState(null);
 
-    // console.log(`PlayerPage: Attempting to connect SSE for groupId: ${groupId}`);
-    const es = new EventSource(`/api/sync/${groupId}`);
+    const es = new EventSource(`/api/sync/${groupIdFromParams}`);
     eventSourceRef.current = es;
 
     es.onopen = () => {
-      // console.log(`PlayerPage: SSE connection opened for ${groupId}`);
       setIsRoomLoading(false); 
       setSyncError(null);
     };
 
     es.onmessage = (event) => {
       try {
-        // console.log(`PlayerPage: SSE message received for ${groupId}:`, event.data);
         const newRoomState: RoomState = JSON.parse(event.data);
         setRoomState(newRoomState);
         setIsRoomLoading(false); 
@@ -139,7 +135,7 @@ export default function PlayerPage() {
     };
 
     es.onerror = (errorEv) => {
-      console.error(`PlayerPage: EventSource failed for group ${groupId}:`, errorEv);
+      console.error(`PlayerPage: EventSource failed for group ${groupIdFromParams}:`, errorEv);
       toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
       setSyncError("Connection to the sync server failed. Changes might not be saved or seen by others.");
       setIsRoomLoading(false);
@@ -150,13 +146,12 @@ export default function PlayerPage() {
     };
 
     return () => {
-      // console.log(`PlayerPage: Cleaning up SSE for ${groupId}`);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
     };
-  }, [groupId, toast, router]); 
+  }, [groupIdFromParams, toast, router]); 
 
   useEffect(() => {
     if (chatScrollAreaRef.current) {
@@ -206,7 +201,6 @@ export default function PlayerPage() {
 
   const onPlayerReady = useCallback((event: any) => {
     if (event.target && typeof event.target.playVideo === 'function') {
-      // Unconditionally try to play. Autoplay: 1 in playerVars should also help.
        event.target.playVideo();
     }
   }, []);
@@ -263,9 +257,7 @@ export default function PlayerPage() {
     if (!youtubeApiReady || isRoomLoading || !roomState) return;
 
     if (currentPlayingSong) {
-       if (!playerRef.current || (playerRef.current.getVideoData && playerRef.current.getVideoData().video_id !== currentPlayingSong.id)) {
         initializePlayer(currentPlayingSong.id);
-      }
     } else { 
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
@@ -295,7 +287,7 @@ export default function PlayerPage() {
       );
       if (!response.ok) { 
         const errorData = await response.json().catch(() => ({})); 
-        const description = `API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || 'Check console for more details.'}`;
+        const description = `Search API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
         toast({ title: "Search Error", description, variant: "destructive", duration: 7000});
         console.error("Search API error details:", errorData);
         setIsSearchLoading(false); 
@@ -362,14 +354,14 @@ export default function PlayerPage() {
         }
       }
       
-      // console.log("Constructed suggestion query:", suggestionQuery);
+      console.log("Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
 
       if (!searchResponse.ok) {
         const errorData = await searchResponse.json().catch(() => ({}));
-        const description = `API request failed: ${searchResponse.status} ${searchResponse.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
+        const description = `Suggestion API request failed: ${searchResponse.status} ${searchResponse.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
         toast({ title: "Suggestion Error", description, variant: "destructive", duration: 7000});
         console.error("Suggestion API error details:", errorData);
         setIsLoadingSuggestions(false); return;
@@ -405,7 +397,7 @@ export default function PlayerPage() {
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
 
-    if (currentQueueIndex === -1 || newQueue.length === 1) {
+    if (currentQueueIndex === -1 || newQueue.length === 1) { // If nothing is playing or it's the first song
       newIndex = newQueue.length - 1; 
     }
     
@@ -424,7 +416,7 @@ export default function PlayerPage() {
   };
 
   const handleInviteFriend = () => {
-    if (groupId) {
+    if (groupIdFromParams) {
       navigator.clipboard.writeText(window.location.href).then(() => {
         setCopiedInvite(true);
         toast({
@@ -472,7 +464,7 @@ export default function PlayerPage() {
       return;
     }
     try {
-      const response = await fetch(`/api/sync/${groupId}`, {
+      const response = await fetch(`/api/sync/${groupIdFromParams}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -502,12 +494,12 @@ export default function PlayerPage() {
     return (
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4">
         <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
-        <p className="text-lg text-muted-foreground">Loading room data for: {groupId || "..."}</p>
+        <p className="text-lg text-muted-foreground">Loading room data for: {groupIdFromParams || "..."}</p>
       </div>
     );
   }
   
-  if (syncError && !roomState) { // Only show full error page if roomState is also null
+  if (syncError && !roomState) {
     return (
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4 text-center">
         <WifiOff className="h-16 w-16 text-destructive mb-4" />
@@ -530,7 +522,7 @@ export default function PlayerPage() {
         <div className="container mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Logo size="small" /> <Separator orientation="vertical" className="h-6" />
-            <div className="text-sm"><span className="text-muted-foreground">Group: </span><span className="font-semibold text-primary">{groupId}</span></div>
+            <div className="text-sm"><span className="text-muted-foreground">Group: </span><span className="font-semibold text-primary">{groupIdFromParams}</span></div>
              {hostUsername && (
                 <div className="text-xs text-muted-foreground flex items-center gap-1 ml-2">
                     <Crown className="h-3 w-3 text-amber-400"/> Hosted by: <span className="font-semibold text-foreground">{hostUsername}</span>
@@ -562,7 +554,7 @@ export default function PlayerPage() {
                     </AlertDescription>
                 </Alert>
             )}
-            {syncError && roomState && ( // Show a less intrusive sync error if roomState is partially available
+            {syncError && roomState && (
               <Alert variant="destructive" className="mb-4">
                 <WifiOff className="h-4 w-4" />
                 <AlertTitle>Connection Issue</AlertTitle>
@@ -583,11 +575,11 @@ export default function PlayerPage() {
                   </div>
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
-                  <div className="flex w-full space-x-2">
+                  <div className="flex w-full justify-center space-x-2">
                     <Tooltip>
                         <TooltipTrigger asChild>
-                            <Button variant="outline" onClick={handleStopAndClear} className="flex-1" disabled={!isCurrentUserHost}>
-                                <ListMusic className="mr-2 h-4 w-4"/> Stop & Clear
+                            <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
+                                <ListMusic className="h-4 w-4"/> <span className="ml-2">Stop & Clear</span>
                             </Button>
                         </TooltipTrigger>
                         {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("stop player and clear queue")}</p></TooltipContent>}
@@ -595,8 +587,8 @@ export default function PlayerPage() {
                     {upNextQueue.length > 0 && (
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <Button variant="secondary" onClick={handleSkipToNext} className="flex-1" disabled={!isCurrentUserHost}>
-                                    <SkipForward className="mr-2 h-4 w-4"/> Skip
+                                <Button variant="secondary" onClick={handleSkipToNext} disabled={!isCurrentUserHost}>
+                                    <SkipForward className="h-4 w-4"/> <span className="ml-2">Skip</span>
                                 </Button>
                             </TooltipTrigger>
                             {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("skip songs")}</p></TooltipContent>}
@@ -740,6 +732,3 @@ export default function PlayerPage() {
     </TooltipProvider>
   );
 }
-
-
-    
