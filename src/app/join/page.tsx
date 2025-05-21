@@ -10,8 +10,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Logo } from '@/components/Logo';
 import { LogIn, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { db } from '@/lib/firebase';
-import { ref, get } from 'firebase/database';
 
 export default function JoinGroupPage() {
   const [groupCodeInput, setGroupCodeInput] = useState('');
@@ -22,43 +20,25 @@ export default function JoinGroupPage() {
   const handleJoinGroup = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmedCode = groupCodeInput.trim().toUpperCase();
-    if (!(trimmedCode.length > 0 && trimmedCode.length <= 10)) {
+    if (!(trimmedCode.length > 0 && trimmedCode.length <= 10)) { // Basic validation
       toast({
         title: "Invalid Code",
-        description: "Please enter a valid group code (1-10 characters).",
+        description: "Please enter a valid group code.",
         variant: "destructive",
       });
       return;
     }
 
     setIsJoining(true);
-    try {
-      const groupRef = ref(db, `groups/${trimmedCode}`);
-      const snapshot = await get(groupRef);
-
-      if (snapshot.exists()) {
-        toast({
-          title: "Joining Group!",
-          description: `Successfully found group ${trimmedCode}.`,
-        });
-        router.push(`/player/${trimmedCode}`);
-      } else {
-        toast({
-          title: "Group Not Found",
-          description: `Group with code ${trimmedCode} does not exist. Please check the code.`,
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      console.error("Failed to check group in Firebase:", error);
-      toast({
-        title: "Firebase Error",
-        description: "Could not check the group. Please check your connection or Firebase setup.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsJoining(false);
-    }
+    // No Firebase check, just navigate to the player page with the code
+    // The player page itself won't have shared state anymore.
+    router.push(`/player/${trimmedCode}`);
+    // We can give a generic toast or none, as we can't confirm group existence client-side without a backend.
+    toast({
+        title: "Joining...",
+        description: `Attempting to join room ${trimmedCode}.`,
+    });
+    // setIsJoining(false); // Navigation will unmount, so this might not be necessary or could be set in a timeout
   };
 
   return (
@@ -67,17 +47,17 @@ export default function JoinGroupPage() {
         <CardHeader className="items-center">
           <Logo size="medium" />
           <CardTitle className="text-2xl font-bold pt-4">Join a Group</CardTitle>
-          <CardDescription>Enter the group code shared by your friend to join the listening session.</CardDescription>
+          <CardDescription>Enter the group code to join a listening session.</CardDescription>
         </CardHeader>
         <form onSubmit={handleJoinGroup}>
           <CardContent className="space-y-4">
             <Input
               type="text"
-              placeholder="Enter Group Code (e.g., D7K3)"
+              placeholder="Enter Group Code (e.g., D7K3F1)"
               value={groupCodeInput}
               onChange={(e) => setGroupCodeInput(e.target.value.toUpperCase())}
               className="text-center text-xl h-14"
-              maxLength={10}
+              maxLength={10} 
               aria-label="Group Code Input"
             />
             <Button type="submit" className="w-full text-lg py-3" disabled={!groupCodeInput.trim() || isJoining}>
