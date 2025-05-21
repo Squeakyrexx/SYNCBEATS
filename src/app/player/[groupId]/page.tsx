@@ -75,7 +75,8 @@ export default function PlayerPage() {
     ? queue[currentQueueIndex]
     : null;
   const chatMessages = roomState?.chatMessages || [];
-  const roomUsers = roomState?.users || []; // Expecting RoomUser[] from server
+  const roomUsers = Array.isArray(roomState?.users) ? roomState.users : [];
+
 
   const hostId = roomState?.hostId;
   const hostUsername = roomState?.hostUsername;
@@ -159,19 +160,18 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      // setIsRoomLoading(false); // Don't set to false until first message with data
       setSyncError(null);
     };
 
     es.onmessage = (event) => {
-      // console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "...");
+      console.log(`[PlayerPage] Raw SSE message received for ${groupIdFromParams}:`, event.data.substring(0,200) + "...");
       if (sseTimeoutRef.current) {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
       try {
         const newRoomState: RoomState = JSON.parse(event.data);
-        // console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
+        console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
         setRoomState(newRoomState);
         setIsRoomLoading(false); 
         setSyncError(null); 
@@ -291,10 +291,6 @@ export default function PlayerPage() {
 
     if (isProgrammaticPlayPauseRef.current) {
       // console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
-        // This change was triggered by server state, so don't send update back
-        // isProgrammaticPlayPauseRef.current = false; // Reset after the event is processed by the player
-        // It's better to reset this when the command is issued, or ensure it only applies once.
-        // For now, we assume this single flag is enough. If a quick succession of programmatic changes occurs, this might need refinement.
         return;
     }
 
@@ -309,7 +305,7 @@ export default function PlayerPage() {
       if (isCurrentUserHost) {
         playNextSongInQueue();
       }
-      return; // ENDED state change handled by playNextSongInQueue, no direct isPlaying update needed here
+      return; 
     }
 
     if (newIsPlayingState !== undefined && newIsPlayingState !== serverIsPlaying) {
@@ -355,7 +351,6 @@ export default function PlayerPage() {
     initializingPlayerRef.current = false;
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
 
-  // Effect to manage player based on currentPlayingSong
   useEffect(() => {
     // console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
@@ -393,7 +388,6 @@ export default function PlayerPage() {
     return () => { if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current); };
   }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]); 
 
-  // Effect to sync local player's play/pause state with server's isPlaying state
   useEffect(() => {
     if (!playerRef.current || !playerRef.current.getPlayerState || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) return;
     
@@ -401,7 +395,7 @@ export default function PlayerPage() {
 
     if (roomState.lastPlaybackChangeBy === currentUser.id) {
       // console.log("[PlayerPage PlaySyncEffect] Change initiated by current user, skipping player command.");
-      return; // Don't act on changes initiated by this client
+      return; 
     }
 
     const localPlayerState = playerRef.current.getPlayerState();
@@ -673,14 +667,14 @@ export default function PlayerPage() {
       toast({ title: "Permission Denied", description: "Only the host can change song permissions.", variant: "destructive" });
       return;
     }
-    // console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
+    console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
     try {
       const response = await fetch(`/api/sync/${groupIdFromParams}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'UPDATE_USER_PERMISSION',
-          userId: currentUser.id, // For host verification on server
+          type: 'UPDATE_USER_PERMISSION', // Ensure this type is handled by the API
+          userId: currentUser.id, 
           username: currentUser.username,
           payload: {
             targetUserId: targetUserId,
@@ -702,11 +696,12 @@ export default function PlayerPage() {
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
   
-  // TEMPORARY: Filter active users for display. Re-enable if needed later.
   // const isUserActive = (user: RoomUser) => (Date.now() - user.lastSeen) < ACTIVE_USER_TIMEOUT_MS;
-  // const activeUsers = roomUsers.filter(isUserActive);
-  // console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
-  const activeUsers = roomUsers; // Display all users for now for debugging
+  // Temporarily display all users to debug list population
+  // const activeUsers = roomUsers.filter(isUserActive); 
+  const activeUsers = roomUsers; // Display all users from server for debugging
+  console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
+
 
   if (isRoomLoading) {
     return (
@@ -798,7 +793,7 @@ export default function PlayerPage() {
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
                   <div className="flex w-full justify-center space-x-2">
-                     <Tooltip>
+                    <Tooltip>
                         <TooltipTrigger asChild>
                            <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
                                 <ListMusic /> <span className="ml-1">Stop & Clear</span>
@@ -1037,3 +1032,4 @@ export default function PlayerPage() {
 }
 
     
+  
