@@ -87,7 +87,6 @@ export default function PlayerPage() {
   const canCurrentUserAddSongs = isCurrentUserHost || !!roomUsers.find(u => u.id === currentUser?.id)?.canAddSongs;
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
-    // console.log(`[PlayerPage updateServerRoomState] Called for group ${groupIdFromParams} with new state:`, newState);
     if (!groupIdFromParams) return;
     try {
       const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
@@ -107,8 +106,6 @@ export default function PlayerPage() {
       if (!response.ok) {
         const errorData = await response.json();
         toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
-      } else {
-        // console.log(`[PlayerPage updateServerRoomState] Successfully updated server for ${groupIdFromParams}`);
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
@@ -162,8 +159,8 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      setSyncError(null); // Clear sync error on successful open
-      setIsRoomLoading(false); // Set loading to false on successful open
+      setSyncError(null); 
+      setIsRoomLoading(false); 
 
       if (currentUser && !announcedPresenceRef.current) {
         console.log(`[PlayerPage] SSE opened, announcing presence for user: ${currentUser.username} in group ${groupIdFromParams}`);
@@ -171,7 +168,7 @@ export default function PlayerPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            type: 'STATE_UPDATE', // Using 'STATE_UPDATE' with empty payload will trigger touchUser
+            type: 'STATE_UPDATE', 
             payload: {}, 
             userId: currentUser.id,
             username: currentUser.username,
@@ -213,11 +210,10 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      // Only show toast if not already timed out, to avoid double alerts
       if (!syncError || !syncError.includes("timed out")) { 
          toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
       }
-      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others."); // Preserve existing syncError if it was a timeout
+      setSyncError(syncError || "Connection to the sync server failed. Changes might not be saved or seen by others."); 
       setIsRoomLoading(false);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -237,7 +233,7 @@ export default function PlayerPage() {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupIdFromParams, currentUser, router]); // isRoomLoading removed, toast removed
+  }, [groupIdFromParams, currentUser, router]); 
 
 
   useEffect(() => {
@@ -261,18 +257,15 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
-      // console.log("[PlayerPage YouTube API Effect] API already loaded.");
       setYoutubeApiReady(true);
       return;
     }
     if (typeof window !== 'undefined' && !apiLoadedRef.current) {
-      // console.log("[PlayerPage YouTube API Effect] Loading YouTube API script.");
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
       apiLoadedRef.current = true;
       window.onYouTubeIframeAPIReady = () => {
-        // console.log("[PlayerPage YouTube API Effect] onYouTubeIframeAPIReady fired.");
         setYoutubeApiReady(true);
       };
     }
@@ -294,11 +287,18 @@ export default function PlayerPage() {
     const player = event.target;
     if (player && typeof player.getPlayerState === 'function' && typeof player.playVideo === 'function') {
         const currentState = player.getPlayerState();
-        if (serverIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
-            console.log("[PlayerPage onPlayerReady] Player ready, server says playing, player not. Attempting to play.");
-            isProgrammaticPlayPauseRef.current = true;
-            player.playVideo();
-            setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
+        if (serverIsPlaying || currentState === -1 || currentState === window.YT.PlayerState.CUED ) {
+            if (serverIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
+                 console.log("[PlayerPage onPlayerReady] Player ready, server says playing or video cued. Attempting to play.");
+                 isProgrammaticPlayPauseRef.current = true; 
+                 player.playVideo();
+                 setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
+            } else if (!serverIsPlaying && currentState === window.YT.PlayerState.PLAYING) {
+                 console.log("[PlayerPage onPlayerReady] Player ready, server says NOT playing, player IS. Attempting to pause.");
+                 isProgrammaticPlayPauseRef.current = true;
+                 player.pauseVideo();
+                 setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
+            }
         }
     }
   }, [serverIsPlaying]);
@@ -346,7 +346,6 @@ export default function PlayerPage() {
 
   const initializePlayer = useCallback((videoId: string) => {
     if (!youtubeApiReady || initializingPlayerRef.current) {
-      // console.log(`[PlayerPage InitializePlayer] Skipped. youtubeApiReady: ${youtubeApiReady}, initializingPlayerRef: ${initializingPlayerRef.current}`);
       if (!youtubeApiReady) console.warn("[PlayerPage InitializePlayer] YouTube API not ready.");
       return;
     }
@@ -385,7 +384,6 @@ export default function PlayerPage() {
     console.log(`[PlayerPage PlayerEffect] youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
       if(playerRef.current && typeof playerRef.current.destroy === 'function' && !currentPlayingSong) {
-        // console.log("[PlayerPage PlayerEffect] No current song and room not ready/loading, destroying player.");
         playerRef.current.destroy();
         playerRef.current = null;
         const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
@@ -399,32 +397,21 @@ export default function PlayerPage() {
       if (currentVideoIdInPlayer !== currentPlayingSong.id) {
         console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title}. Initializing player.`);
         initializePlayer(currentPlayingSong.id);
-      } else {
-         // console.log(`[PlayerPage PlayerEffect] Song ${currentPlayingSong.title} already loaded in player.`);
       }
     } else {
-      // console.log("[PlayerPage PlayerEffect] No current playing song. Destroying player if exists.");
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) playerDiv.innerHTML = ''; 
-      if (queue.length === 0) {
-        setSuggestedSongs([]); 
-      }
     }
-    
-    return () => { if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current); };
-  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, queue.length]); 
+  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState]); 
 
   useEffect(() => {
     if (!playerRef.current || !playerRef.current.getPlayerState || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) return;
     
-    // console.log(`[PlayerPage PlaySyncEffect] serverIsPlaying: ${serverIsPlaying}, lastPlaybackChangeBy: ${roomState.lastPlaybackChangeBy}, currentUser: ${currentUser.id}`);
-
     if (roomState.lastPlaybackChangeBy === currentUser.id) {
-      // console.log("[PlayerPage PlaySyncEffect] Change initiated by current user, skipping player command.");
       return; 
     }
 
@@ -438,8 +425,6 @@ export default function PlayerPage() {
     } else if (!serverIsPlaying && localPlayerState === window.YT.PlayerState.PLAYING) {
       console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
       playerRef.current.pauseVideo();
-    } else {
-      //  console.log("[PlayerPage PlaySyncEffect] No playback command needed. Local/Server state aligned or change was local.");
     }
     
     const timer = setTimeout(() => {
@@ -487,56 +472,26 @@ export default function PlayerPage() {
     }
   };
 
-  const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
-    if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) {
-        setSuggestedSongs([]);
-        if (apiKeyMissing && toast) { 
-             toast({ title: "API Key Missing", description: "Cannot fetch suggestions without YouTube API key.", variant: "destructive" });
-        } 
-        if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) && toast) {
-            toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
-            console.warn("[PlayerPage handleSelectSong] Cannot get suggestions for song due to missing data:", songForSuggestions);
-        }
-        return;
+const handleFetchSuggestions = useCallback(async (songForSuggestions: Song | null) => {
+    if (apiKeyMissing) {
+      if (toast) toast({ title: "API Key Missing", description: "Cannot fetch suggestions without YouTube API key.", variant: "destructive" });
+      setSuggestedSongs([]);
+      return;
     }
-    setIsLoadingSuggestions(true); setSuggestedSongs([]);
+    if (!songForSuggestions || !songForSuggestions.id || !songForSuggestions.artist) {
+      console.log("[PlayerPage handleFetchSuggestions] No song for suggestions, or missing data. Clearing suggestions.");
+      setSuggestedSongs([]);
+      return;
+    }
 
-    let suggestionQuery = songForSuggestions.artist; 
-    console.log("[PlayerPage handleFetchSuggestions] Fetching details for suggestion base song:", songForSuggestions.title);
+    console.log("[PlayerPage handleFetchSuggestions] Fetching suggestions based on song:", songForSuggestions.title);
+    setIsLoadingSuggestions(true);
+    setSuggestedSongs([]);
 
     try {
-      const videoDetailsResponse = await fetch(
-        `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${songForSuggestions.id}&key=${YOUTUBE_API_KEY}`
-      );
-
-      if (videoDetailsResponse.ok) {
-        const videoData = await videoDetailsResponse.json();
-        if (videoData.items && videoData.items.length > 0) {
-          const details = videoData.items[0];
-          let genreHint = "";
-          if (details.topicDetails && details.topicDetails.topicCategories) {
-            const musicCategory = details.topicDetails.topicCategories.find((cat: string) => cat.includes("music") || cat.includes("Music"));
-            if (musicCategory) {
-              const genreMatch = musicCategory.match(/wiki\/(.*)/);
-              if (genreMatch && genreMatch[1]) {
-                genreHint = decodeURIComponent(genreMatch[1].replace(/_/g, " "));
-              }
-            }
-          }
-          if (!genreHint && details.snippet && details.snippet.tags) {
-            const commonGenres = ["pop", "rock", "hip hop", "electronic", "jazz", "classical", "r&b", "country", "folk", "metal", "reggae", "blues", "soul", "funk"];
-            const foundGenreTag = details.snippet.tags.find((tag: string) => commonGenres.some(g => tag.toLowerCase().includes(g)));
-            if (foundGenreTag) genreHint = foundGenreTag;
-          }
-
-          if (genreHint) {
-            suggestionQuery = `${songForSuggestions.artist} ${genreHint}`;
-          }
-        }
-      } else {
-         console.warn("[PlayerPage handleFetchSuggestions] Failed to fetch video details for genre hint. Status:", videoDetailsResponse.status);
-      }
+      const suggestionQuery = songForSuggestions.artist; // Simplified query
       console.log("[PlayerPage handleFetchSuggestions] Constructed suggestion query:", suggestionQuery);
+
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
       );
@@ -544,32 +499,68 @@ export default function PlayerPage() {
       if (!searchResponse.ok) {
         const errorData = await searchResponse.json().catch(() => ({}));
         const description = `Suggestion API request failed: ${searchResponse.status} ${searchResponse.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
-        toast({ title: "Suggestion Error", description, variant: "destructive", duration: 7000});
+        if (toast) toast({ title: "Suggestion Error", description, variant: "destructive", duration: 7000});
         console.error("Suggestion API error details:", errorData);
-        setIsLoadingSuggestions(false); return;
+        setSuggestedSongs([]);
+        return;
       }
-      const data = await searchResponse.json(); const items = data.items || [];
+
+      const data = await searchResponse.json();
+      const items = data.items || [];
+
       if (items.length === 0 && searchResponse.ok && toast) {
-          toast({ title: "No Suggestions Found", description: "The API returned no additional videos from this artist/genre.", duration: 3000 });
+          toast({ title: "No Suggestions Found", description: "The API returned no additional videos for this artist.", duration: 3000 });
       }
+
       const newSuggestions: Song[] = items
-        .map((item: any) => ({
+        .map((item: any): Song => ({
             id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
             channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video",
         }))
-        .filter(newSong =>
-            !queue.find(qSong => qSong.id === newSong.id) &&
-            newSong.id !== songForSuggestions.id && 
-            newSong.id !== (currentPlayingSong?.id || '') 
-        );
+        .filter(newSong => {
+          const isInQueue = queue.some(qSong => qSong.id === newSong.id);
+          const isTheSuggestionBaseSong = newSong.id === songForSuggestions.id;
+          return !isInQueue && !isTheSuggestionBaseSong;
+        });
+        
       setSuggestedSongs(newSuggestions.slice(0, 5)); 
+      console.log("[PlayerPage handleFetchSuggestions] Fetched suggestions:", newSuggestions.slice(0,5));
+
     } catch (error) {
         console.error("[PlayerPage handleFetchSuggestions] Error fetching suggestions:", error);
         if(toast) toast({ title: "Suggestion Failed", description: "An unexpected error occurred while fetching suggestions.", variant: "destructive"});
     } finally {
         setIsLoadingSuggestions(false);
     }
-  }, [apiKeyMissing, YOUTUBE_API_KEY, toast, queue, currentPlayingSong?.id]);
+  }, [apiKeyMissing, YOUTUBE_API_KEY, toast, queue]);
+
+
+  // Effect to fetch suggestions when currentPlayingSong changes
+  useEffect(() => {
+    if (apiKeyMissing) {
+      setSuggestedSongs([]);
+      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
+      return;
+    }
+
+    if (currentPlayingSong && currentPlayingSong.id && currentPlayingSong.artist) {
+      console.log(`[PlayerPage SuggestionEffect] Current song changed to: ${currentPlayingSong.title}. Debouncing suggestion fetch.`);
+      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
+      suggestionDebounceTimer.current = setTimeout(() => {
+        handleFetchSuggestions(currentPlayingSong);
+      }, 1500); // Debounce for 1.5 seconds
+    } else {
+      // No current song, or current song is missing data
+      console.log("[PlayerPage SuggestionEffect] No current song or missing data. Clearing suggestions.");
+      setSuggestedSongs([]);
+      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
+    }
+
+    return () => {
+      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
+    };
+  }, [currentPlayingSong, apiKeyMissing, handleFetchSuggestions]);
+
 
   const handleSelectSong = (song: Song) => {
     if (!currentUser) {
@@ -583,7 +574,6 @@ export default function PlayerPage() {
     if (!song.id || !song.artist || !song.channelId) {
       toast({ title: "Song Data Incomplete", description: "Cannot add song due to missing ID, artist, or channel ID. Suggestions might fail.", variant: "destructive" });
       console.warn("[PlayerPage handleSelectSong] Attempted to add song with incomplete data:", song);
-      // Allow adding to queue even if some data is missing, but warn about suggestions
     }
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
@@ -608,17 +598,7 @@ export default function PlayerPage() {
 
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
     setSearchResults([]); 
-    setSearchQuery('');     
-    setSuggestedSongs([]);
-
-
-    if (song.id && song.channelId && song.artist) { 
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-      suggestionDebounceTimer.current = setTimeout(() => handleFetchSuggestions(song), 1000);
-    } else {
-        toast({title: "Cannot get suggestions", description: "Selected song is missing required info for suggestions.", variant: "destructive"});
-        console.warn("[PlayerPage handleSelectSong] Cannot get suggestions for song due to missing data:", song);
-    }
+    setSearchQuery('');
   };
 
   const handleInviteFriend = () => {
@@ -731,8 +711,7 @@ export default function PlayerPage() {
 
   const upNextQueue = queue.slice(currentQueueIndex + 1);
   
-  const activeUsers = roomUsers; // Simplified: show all users from roomState
-  console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users);
+  const activeUsers = roomUsers; 
 
 
   if (isRoomLoading) {
@@ -824,7 +803,7 @@ export default function PlayerPage() {
                   </div>
                 </CardContent>
                 <CardFooter className="flex-col space-y-2 pt-4">
-                  <div className="flex w-full justify-center space-x-2">
+                   <div className="flex w-full justify-center space-x-2">
                      <Tooltip>
                         <TooltipTrigger asChild>
                             <Button variant="outline" onClick={handleStopAndClear} disabled={!isCurrentUserHost}>
@@ -833,7 +812,7 @@ export default function PlayerPage() {
                         </TooltipTrigger>
                         {!isCurrentUserHost && <TooltipContent><p>{hostControlTooltip("stop player and clear queue")}</p></TooltipContent>}
                     </Tooltip>
-                    {upNextQueue.length > 0 && (
+                    {(upNextQueue.length > 0 || (queue.length > 0 && currentQueueIndex < queue.length -1)) && ( 
                         <Tooltip>
                             <TooltipTrigger asChild>
                                <Button variant="secondary" onClick={handleSkipToNext} disabled={!isCurrentUserHost}>
@@ -861,14 +840,14 @@ export default function PlayerPage() {
           </div>
 
           {(queue.length > 0 && upNextQueue.length > 0) && (
-            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]"> {/* Adjusted max-h for larger screens */}
+            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]">
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
                   <div className="space-y-2">
                     {upNextQueue.map((song, index) => (
                       <Card key={song.id + "-upnext-" + index} className="flex items-center p-2 gap-2 bg-muted/60 hover:bg-muted/80">
-                        <Image src={song.thumbnailUrl} alt={song.title} width={60} height={45} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                        <Image src={song.thumbnailUrl} alt={song.title} width={60} height={45} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint || "music video"} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-sm truncate text-foreground" title={song.title}>{song.title}</p>
                           <p className="text-xs text-muted-foreground truncate" title={song.artist}>{song.artist}</p>
@@ -922,7 +901,7 @@ export default function PlayerPage() {
                                     onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
                                     aria-disabled={!canCurrentUserAddSongs}
                                 >
-                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint || "music video"} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
                                     <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div>
                                     <Button variant="ghost" size="icon" disabled={!canCurrentUserAddSongs} className={`${!canCurrentUserAddSongs && 'pointer-events-none'}`}>
                                         <PlayCircle className={canCurrentUserAddSongs ? "text-primary" : "text-muted-foreground"}/>
@@ -938,7 +917,7 @@ export default function PlayerPage() {
             </Card>
           )}
 
-          {((isLoadingSuggestions || suggestedSongs.length > 0 || (queue.length > 0 && !isLoadingSuggestions && suggestedSongs.length === 0))) && !apiKeyMissing && (
+           {(isLoadingSuggestions || suggestedSongs.length > 0 || (currentPlayingSong && !isLoadingSuggestions && suggestedSongs.length === 0 && !apiKeyMissing)) && (
             <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
               <CardHeader><CardTitle className="text-card-foreground flex items-center gap-2"><ThumbsUp className="text-primary"/>{isLoadingSuggestions ? "Loading Suggestions..." : "You Might Like"}</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
@@ -958,7 +937,7 @@ export default function PlayerPage() {
                                     onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
                                     aria-disabled={!canCurrentUserAddSongs}
                                 >
-                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
+                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint || "music video"} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
                                     <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div>
                                     <Button variant="ghost" size="icon" disabled={!canCurrentUserAddSongs} className={`${!canCurrentUserAddSongs && 'pointer-events-none'}`}>
                                         <PlayCircle className={canCurrentUserAddSongs ? "text-primary" : "text-muted-foreground"}/>
@@ -968,16 +947,16 @@ export default function PlayerPage() {
                             {!canCurrentUserAddSongs && <TooltipContent><p>{addSongPermissionTooltip}</p></TooltipContent>}
                         </Tooltip>
                     ))}
-                    {!isLoadingSuggestions && suggestedSongs.length === 0 && queue.length > 0 && ( <div className="text-center py-4 text-muted-foreground"> <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> <p className="text-sm">No new suggestions for this artist/genre.</p> <p className="text-xs">Try adding a different song to the queue.</p> </div> )}
+                    {!isLoadingSuggestions && suggestedSongs.length === 0 && currentPlayingSong && !apiKeyMissing && ( <div className="text-center py-4 text-muted-foreground"> <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> <p className="text-sm">No new suggestions for this artist.</p> <p className="text-xs">Try a different song to get new suggestions.</p> </div> )}
                   </div>
                 </ScrollArea>
               </CardContent>
             </Card>
           )}
-          {(queue.length === 0) && suggestedSongs.length === 0 && !isLoadingSuggestions && !apiKeyMissing && (
+          {(!currentPlayingSong || apiKeyMissing) && suggestedSongs.length === 0 && !isLoadingSuggestions && (
             <Card className="shadow-lg bg-card p-4 text-center text-muted-foreground">
                 <ThumbsUp className="h-10 w-10 mx-auto mb-2"/>
-                <p className="text-sm">Add songs to the queue to see suggestions.</p>
+                <p className="text-sm">{apiKeyMissing ? "Suggestions disabled (API key missing)." : "Play a song to see suggestions."}</p>
             </Card>
           )}
 
@@ -1078,5 +1057,3 @@ export default function PlayerPage() {
     </TooltipProvider>
   );
 }
-
-    
