@@ -17,36 +17,40 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { groupId: string } }
 ) {
-  const { groupId } = params;
+  const groupId = params.groupId?.toUpperCase(); // Ensure consistent casing
   if (!groupId) {
     return new Response('Missing groupId', { status: 400 });
   }
 
   const stream = new ReadableStream({
     start(controller) {
+      console.log(`[SSE /api/sync/${groupId}] Stream starting...`);
       try {
         addSSEClient(groupId, controller);
         
         let currentRoomState = getRoomState(groupId);
         if (!currentRoomState) {
+          console.log(`[SSE /api/sync/${groupId}] Room not found, initializing.`);
           currentRoomState = initializeRoom(groupId);
         }
-        const initialData = `data: ${JSON.stringify(currentRoomState)}\n\n`;
+        const initialDataString = JSON.stringify(currentRoomState);
+        const initialData = `data: ${initialDataString}\n\n`;
+        console.log(`[SSE /api/sync/${groupId}] Sending initial data:`, initialDataString.substring(0,100) + "...");
         controller.enqueue(new TextEncoder().encode(initialData));
+        console.log(`[SSE /api/sync/${groupId}] Initial data enqueued.`);
         
         const keepAliveInterval = setInterval(() => {
           try {
-            // Check if the client is still connected or wants data
             if (controller.desiredSize === null || controller.desiredSize > 0) {
+              // console.log(`[SSE /api/sync/${groupId}] Sending keep-alive.`);
               controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
             } else {
-              // Client likely disconnected or stream closed
+              console.log(`[SSE /api/sync/${groupId}] Controller desiredSize not positive, closing keep-alive.`);
               clearInterval(keepAliveInterval);
               removeSSEClient(groupId, controller);
-              // Controller is likely already closed or in the process of closing
             }
           } catch (e) {
-            // console.error(`Error sending SSE keep-alive for ${groupId}:`, e);
+            console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
             clearInterval(keepAliveInterval);
             removeSSEClient(groupId, controller);
             try { controller.close(); } catch { /* ignore */ }
@@ -55,6 +59,7 @@ export async function GET(
 
 
         request.signal.addEventListener('abort', () => {
+          console.log(`[SSE /api/sync/${groupId}] Request aborted, cleaning up.`);
           clearInterval(keepAliveInterval);
           removeSSEClient(groupId, controller);
           try { controller.close(); } catch { /* ignore */ }
@@ -63,27 +68,24 @@ export async function GET(
         console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, e);
         removeSSEClient(groupId, controller);
         try {
-          // Try to signal an error on the stream before closing.
-          // This might help client's EventSource.onerror to fire.
-          if (controller.desiredSize !== null) { // Check if controller is still active
+          if (controller.desiredSize !== null) { 
              controller.error(e instanceof Error ? e : new Error(String(e)));
           }
         } catch (errSignalError) {
-            // console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
+            console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
         }
         try { 
-          if (controller.desiredSize !== null) { // Check if controller is still active
+          if (controller.desiredSize !== null) { 
             controller.close(); 
           }
         } catch (closeErr) {
-            // console.error(`[SSE /api/sync/${groupId}] Error closing controller after critical error:`, closeErr);
+            console.error(`[SSE /api/sync/${groupId}] Error closing controller after critical error:`, closeErr);
         }
       }
     },
     cancel(_reason) {
-      // console.log(`SSE Stream cancelled for group ${groupId}. Reason:`, reason);
+      console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
       // Cleanup is primarily handled by the 'abort' event on request.signal
-      // as 'controller' isn't directly accessible here in a straightforward way for removal.
     }
   });
 
@@ -108,14 +110,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { groupId: string } }
 ) {
-  const { groupId } = params;
+  const groupId = params.groupId?.toUpperCase(); // Ensure consistent casing
   if (!groupId) {
     return NextResponse.json({ error: 'Missing groupId' }, { status: 400 });
   }
 
   try {
     const body = await request.json() as PostBody;
-    // console.log(`POST request for group ${groupId} with body:`, body);
+    console.log(`[POST /api/sync/${groupId}] Received request. Type: ${body.type}`);
 
     if (body.type === 'STATE_UPDATE') {
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
@@ -138,7 +140,6 @@ export async function POST(
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
-        // This case should ideally not be reached if addChatMessageToRoom always returns a RoomState or throws
         return NextResponse.json({ error: 'Failed to add chat message or room not found' }, { status: 500 });
       }
     } else {
@@ -146,8 +147,7 @@ export async function POST(
     }
 
   } catch (error) {
-    console.error(`Error processing POST for group ${groupId}:`, error);
-    // Check if error is a SyntaxError (likely from request.json())
+    console.error(`[POST /api/sync/${groupId}] Error processing POST:`, error);
     if (error instanceof SyntaxError) {
         return NextResponse.json({ error: 'Invalid JSON in request body' }, { status: 400 });
     }

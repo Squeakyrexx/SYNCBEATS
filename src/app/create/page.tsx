@@ -18,49 +18,54 @@ export default function CreateGroupPage() {
   const router = useRouter();
   const { toast } = useToast();
 
-  const generateGroupCode = useCallback(() => {
+  const generateNewGroupCode = useCallback(() => {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     setGroupCode(code);
+    setCopied(false); // Reset copied state when new code is generated
     return code;
   }, []);
 
   useEffect(() => {
-    generateGroupCode();
-  }, [generateGroupCode]);
+    generateNewGroupCode();
+  }, [generateNewGroupCode]);
 
   const handleCopyCode = () => {
-    if (groupCode) {
-      navigator.clipboard.writeText(groupCode).then(() => {
-        setCopied(true);
-        toast({
-          title: "Code Copied!",
-          description: `Group code ${groupCode} copied to clipboard.`,
-        });
-        setTimeout(() => setCopied(false), 2000);
-      }).catch(err => {
-        console.error("Failed to copy code: ", err);
-        toast({
-          title: "Error",
-          description: "Failed to copy code. Please try again.",
-          variant: "destructive",
-        });
-      });
+    if (!groupCode) {
+      toast({ title: "Error", description: "Group code not generated yet.", variant: "destructive" });
+      return;
     }
+    navigator.clipboard.writeText(groupCode).then(() => {
+      setCopied(true);
+      toast({
+        title: "Code Copied!",
+        description: `Group code ${groupCode} copied to clipboard.`,
+      });
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(err => {
+      console.error("Failed to copy code: ", err);
+      toast({
+        title: "Error",
+        description: "Failed to copy code. Please try again.",
+        variant: "destructive",
+      });
+    });
   };
 
   const handleGoToPlayer = () => {
     if (!groupCode) {
       toast({
         title: "Error",
-        description: "Group code is not generated yet.",
+        description: "Group code is not generated yet. Please try generating one.",
         variant: "destructive",
       });
       return;
     }
+    if (isNavigating) return; // Prevent double-clicks
+
     setIsNavigating(true);
-    // No backend interaction needed here to "create" the group.
     // The room state will be managed by the in-memory store when the player page connects.
     router.push(`/player/${groupCode}`);
+    // setIsNavigating will effectively be reset when the component unmounts on navigation
   };
 
   return (
@@ -75,26 +80,26 @@ export default function CreateGroupPage() {
           <div className="text-center">
             <p className="text-sm text-muted-foreground mb-1">Your Group Code:</p>
             <div className="flex items-center justify-center space-x-2">
-              <Input 
-                readOnly 
-                value={groupCode || "Generating..."} 
-                className="text-4xl font-bold tracking-widest text-center h-auto py-3 bg-muted text-foreground border-2 border-dashed border-primary" 
+              <Input
+                readOnly
+                value={groupCode || "Generating..."}
+                className="text-4xl font-bold tracking-widest text-center h-auto py-3 bg-muted text-foreground border-2 border-dashed border-primary"
                 aria-label="Group Code"
               />
-              <Button variant="outline" size="icon" onClick={generateGroupCode} aria-label="Generate new code" disabled={!groupCode}>
+              <Button variant="outline" size="icon" onClick={generateNewGroupCode} aria-label="Generate new code">
                 <RefreshCw className="h-5 w-5" />
               </Button>
             </div>
           </div>
-          <Button onClick={handleCopyCode} className="w-full text-lg py-3" disabled={!groupCode || isNavigating}>
+          <Button onClick={handleCopyCode} className="w-full text-lg py-3" disabled={!groupCode || copied}>
             {copied ? <Check className="mr-2 h-5 w-5" /> : <Copy className="mr-2 h-5 w-5" />}
             {copied ? 'Copied!' : 'Copy Code'}
           </Button>
         </CardContent>
         <CardFooter className="flex flex-col space-y-4">
           <Button onClick={handleGoToPlayer} className="w-full text-lg py-3" disabled={!groupCode || isNavigating}>
-            {isNavigating && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-            {isNavigating ? "Navigating..." : "Go to Player"} <ArrowRight className="ml-2 h-5 w-5" />
+            {isNavigating ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <ArrowRight className="ml-2 h-5 w-5" />}
+            {isNavigating ? "Navigating..." : "Go to Player"}
           </Button>
           <Button variant="link" asChild>
             <Link href="/">Back to Home</Link>

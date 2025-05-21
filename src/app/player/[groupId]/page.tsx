@@ -30,6 +30,7 @@ declare global {
 
 const YOUTUBE_API_KEY = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 const PLAYER_CONTAINER_ID = 'youtube-player-container';
+const SSE_CONNECTION_TIMEOUT_MS = 15000; // 15 seconds
 
 export default function PlayerPage() {
   const params = useParams();
@@ -38,7 +39,7 @@ export default function PlayerPage() {
   const authContext = useContext(AuthContext);
   const currentUser = authContext?.user;
 
-  const groupIdFromParams = typeof params.groupId === 'string' ? params.groupId : '';
+  const groupIdFromParams = typeof params.groupId === 'string' ? params.groupId.toUpperCase() : '';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -50,6 +51,8 @@ export default function PlayerPage() {
   const [isRoomLoading, setIsRoomLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const sseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
 
   const playerRef = useRef<any | null>(null);
   const apiLoadedRef = useRef(false);
@@ -100,42 +103,71 @@ export default function PlayerPage() {
       console.error("Error updating server room state:", error);
     }
   }, [groupIdFromParams, toast, currentUser]);
-  
+
   useEffect(() => {
     if (!groupIdFromParams) {
       setIsRoomLoading(false);
       setSyncError("No Group ID provided. Please join or create a group.");
-      toast({ title: "Error", description: "No Group ID in URL.", variant: "destructive" });
-      router.push('/'); // Redirect if no group ID
+      // router.push('/'); // Might be too aggressive, consider showing an error message page
       return;
     }
 
     setIsRoomLoading(true);
     setSyncError(null);
-    setRoomState(null);
+    setRoomState(null); // Reset room state for new groupId
 
+    console.log(`[PlayerPage] Attempting SSE connection for group: ${groupIdFromParams}`);
     const es = new EventSource(`/api/sync/${groupIdFromParams}`);
     eventSourceRef.current = es;
 
+    // Clear any existing timeout
+    if (sseTimeoutRef.current) {
+      clearTimeout(sseTimeoutRef.current);
+    }
+
+    // Set a timeout for the SSE connection
+    sseTimeoutRef.current = setTimeout(() => {
+      if (isRoomLoading) { // Check if still loading
+        console.warn(`[PlayerPage] SSE connection timed out for ${groupIdFromParams}`);
+        toast({
+          title: "Connection Timeout",
+          description: "Could not connect to the room server. Please try refreshing.",
+          variant: "destructive",
+          duration: 10000,
+        });
+        setSyncError("Connection to the room server timed out. Please refresh.");
+        setIsRoomLoading(false);
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+        }
+      }
+    }, SSE_CONNECTION_TIMEOUT_MS);
+
     es.onopen = () => {
-      setIsRoomLoading(false); 
+      console.log(`[PlayerPage] SSE connection opened for: ${groupIdFromParams}`);
+      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
+      setIsRoomLoading(false);
       setSyncError(null);
     };
 
     es.onmessage = (event) => {
+      console.log(`[PlayerPage] SSE message received for ${groupIdFromParams}:`, event.data.substring(0,100) + "..."); // Log truncated data
+      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
       try {
         const newRoomState: RoomState = JSON.parse(event.data);
         setRoomState(newRoomState);
-        setIsRoomLoading(false); 
-      } catch (error) {
-        console.error("Error parsing SSE message:", error);
-        setSyncError("Error processing room data.");
         setIsRoomLoading(false);
+      } catch (error) {
+        console.error("[PlayerPage] Error parsing SSE message:", error);
+        setSyncError("Error processing room data.");
+        setIsRoomLoading(false); // Ensure loading stops even on parse error
       }
     };
 
     es.onerror = (errorEv) => {
-      console.error(`PlayerPage: EventSource failed for group ${groupIdFromParams}:`, errorEv);
+      console.error(`[PlayerPage] EventSource error for group ${groupIdFromParams}:`, errorEv);
+      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
       toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
       setSyncError("Connection to the sync server failed. Changes might not be saved or seen by others.");
       setIsRoomLoading(false);
@@ -146,12 +178,16 @@ export default function PlayerPage() {
     };
 
     return () => {
+      console.log(`[PlayerPage] Cleaning up SSE for ${groupIdFromParams}`);
+      if (sseTimeoutRef.current) clearTimeout(sseTimeoutRef.current);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
     };
-  }, [groupIdFromParams, toast, router]); 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupIdFromParams, toast]); // Removed router, isRoomLoading. isRoomLoading in timeout closure is fine.
+
 
   useEffect(() => {
     if (chatScrollAreaRef.current) {
@@ -167,7 +203,7 @@ export default function PlayerPage() {
         title: "API Key Missing",
         description: "YouTube API key is not configured. Song search/playback may be disabled.",
         variant: "destructive",
-        duration: Infinity, 
+        duration: Infinity,
       });
     }
   }, [apiKeyMissing, toast]);
@@ -181,7 +217,7 @@ export default function PlayerPage() {
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
-      apiLoadedRef.current = true; 
+      apiLoadedRef.current = true;
       window.onYouTubeIframeAPIReady = () => {
         setYoutubeApiReady(true);
       };
@@ -193,9 +229,9 @@ export default function PlayerPage() {
 
     if (queue.length > 0 && currentQueueIndex < queue.length - 1) {
        updateServerRoomState({ currentQueueIndex: currentQueueIndex + 1 });
-    } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) { 
+    } else if (queue.length > 0 && currentQueueIndex >= queue.length -1) {
        toast({ title: "Queue Finished", description: "Add more songs to keep listening!" });
-       updateServerRoomState({ currentQueueIndex: -1 }); 
+       updateServerRoomState({ currentQueueIndex: -1 });
     }
   }, [currentQueueIndex, queue, toast, updateServerRoomState, isCurrentUserHost]);
 
@@ -235,7 +271,7 @@ export default function PlayerPage() {
     }
     const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
     if (playerDiv && window.YT && window.YT.Player) {
-      playerDiv.innerHTML = ''; 
+      playerDiv.innerHTML = '';
       try {
         playerRef.current = new window.YT.Player(PLAYER_CONTAINER_ID, {
           videoId: videoId,
@@ -245,7 +281,7 @@ export default function PlayerPage() {
       } catch (e) {
         console.error("Error creating YouTube player:", e);
         toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
-        playerRef.current = null; 
+        playerRef.current = null;
       }
     } else if (!playerDiv) {
       console.error(`Player container with ID '${PLAYER_CONTAINER_ID}' not found.`);
@@ -258,14 +294,14 @@ export default function PlayerPage() {
 
     if (currentPlayingSong) {
         initializePlayer(currentPlayingSong.id);
-    } else { 
+    } else {
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
-      if (playerDiv) playerDiv.innerHTML = ''; 
-      if (queue.length === 0) { 
+      if (playerDiv) playerDiv.innerHTML = '';
+      if (queue.length === 0) {
         setSuggestedSongs([]);
       }
     }
@@ -275,23 +311,23 @@ export default function PlayerPage() {
 
   const handleSearch = async (e?: FormEvent<HTMLFormElement>) => {
     e?.preventDefault();
-    if (apiKeyMissing) { 
+    if (apiKeyMissing) {
         toast({ title: "API Key Missing", description: "Cannot search without YouTube API key.", variant: "destructive" });
-        return; 
+        return;
     }
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]); 
+    setIsSearchLoading(true); setSearchResults([]); setSuggestedSongs([]);
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
       );
-      if (!response.ok) { 
-        const errorData = await response.json().catch(() => ({})); 
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
         const description = `Search API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || 'Check console for details.'}`;
         toast({ title: "Search Error", description, variant: "destructive", duration: 7000});
         console.error("Search API error details:", errorData);
-        setIsSearchLoading(false); 
-        return; 
+        setIsSearchLoading(false);
+        return;
       }
       const data = await response.json(); const items = data.items || [];
       const songs: Song[] = items.map((item: any) => ({
@@ -301,11 +337,11 @@ export default function PlayerPage() {
       }));
       setSearchResults(songs);
       if (songs.length === 0) toast({ title: "No results", description: "Try a different search." });
-    } catch (error) { 
+    } catch (error) {
         console.error("Search error:", error);
         toast({ title: "Search Failed", description: "An unexpected error occurred during search.", variant: "destructive"});
-    } finally { 
-        setIsSearchLoading(false); 
+    } finally {
+        setIsSearchLoading(false);
     }
   };
 
@@ -313,14 +349,14 @@ export default function PlayerPage() {
     if (apiKeyMissing || !songForSuggestions || !songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist) {
         setSuggestedSongs([]);
         if (songForSuggestions && (!songForSuggestions.id || !songForSuggestions.channelId || !songForSuggestions.artist)) {
-            if (YOUTUBE_API_KEY) { 
+            if (YOUTUBE_API_KEY) {
               toast({title: "Suggestion Info Missing", description: "Cannot get suggestions without complete song info.", variant: "destructive"});
             }
         }
         return;
     }
     setIsLoadingSuggestions(true); setSuggestedSongs([]);
-    
+
     let suggestionQuery = songForSuggestions.artist;
 
     try {
@@ -353,7 +389,7 @@ export default function PlayerPage() {
           }
         }
       }
-      
+
       console.log("Constructed suggestion query:", suggestionQuery);
       const searchResponse = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
@@ -367,25 +403,25 @@ export default function PlayerPage() {
         setIsLoadingSuggestions(false); return;
       }
       const data = await searchResponse.json(); const items = data.items || [];
-      if (items.length === 0 && searchResponse.ok) { 
+      if (items.length === 0 && searchResponse.ok) {
           toast({ title: "No Suggestions Found", description: "The API returned no additional videos from this artist/genre.", duration: 3000 });
       }
       const newSuggestions: Song[] = items
-        .map((item: any) => ({ 
-            id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle, 
-            channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video", 
+        .map((item: any) => ({
+            id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
+            channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video",
         }))
-        .filter(newSong => 
-            !queue.find(qSong => qSong.id === newSong.id) && 
-            newSong.id !== songForSuggestions.id && 
-            newSong.id !== (currentPlayingSong?.id || '') 
+        .filter(newSong =>
+            !queue.find(qSong => qSong.id === newSong.id) &&
+            newSong.id !== songForSuggestions.id &&
+            newSong.id !== (currentPlayingSong?.id || '')
         );
-      setSuggestedSongs(newSuggestions.slice(0, 5)); 
-    } catch (error) { 
+      setSuggestedSongs(newSuggestions.slice(0, 5));
+    } catch (error) {
         console.error("Error fetching suggestions:", error);
         toast({ title: "Suggestion Failed", description: "An unexpected error occurred while fetching suggestions.", variant: "destructive"});
-    } finally { 
-        setIsLoadingSuggestions(false); 
+    } finally {
+        setIsLoadingSuggestions(false);
     }
   }, [apiKeyMissing, YOUTUBE_API_KEY, toast, queue, currentPlayingSong?.id]);
 
@@ -397,15 +433,16 @@ export default function PlayerPage() {
     const newQueue = [...queue, song];
     let newIndex = currentQueueIndex;
 
-    if (currentQueueIndex === -1 || newQueue.length === 1) { // If nothing is playing or it's the first song
-      newIndex = newQueue.length - 1; 
+    if (currentQueueIndex === -1 || newQueue.length === 1) {
+      newIndex = newQueue.length - 1;
     }
-    
+
     updateServerRoomState({ queue: newQueue, currentQueueIndex: newIndex });
-    
+
     toast({ title: "Added to Queue", description: `${song.title} by ${song.artist}` });
-    setSearchResults([]); 
-    setSearchQuery(''); 
+    setSearchResults([]);
+    setSearchQuery('');
+    setSuggestedSongs([]); // Clear old suggestions when a new song is picked manually
 
     if (song.id && song.artist && song.channelId) {
       if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
@@ -441,7 +478,7 @@ export default function PlayerPage() {
       return;
     }
     updateServerRoomState({ queue: [], currentQueueIndex: -1 });
-    setSuggestedSongs([]); 
+    setSuggestedSongs([]);
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
   };
 
@@ -480,14 +517,14 @@ export default function PlayerPage() {
         const errorData = await response.json();
         toast({ title: "Chat Error", description: errorData.error || "Failed to send message.", variant: "destructive" });
       } else {
-        setNewMessage(''); 
+        setNewMessage('');
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to send chat message.", variant: "destructive" });
       console.error("Error sending chat message:", error);
     }
   };
-  
+
   const upNextQueue = queue.slice(currentQueueIndex + 1);
 
   if (isRoomLoading) {
@@ -498,8 +535,8 @@ export default function PlayerPage() {
       </div>
     );
   }
-  
-  if (syncError && !roomState) {
+
+  if (syncError && !roomState) { // Show full page error only if roomState is also null
     return (
       <div className="flex flex-col min-h-screen items-center justify-center bg-background text-foreground p-4 text-center">
         <WifiOff className="h-16 w-16 text-destructive mb-4" />
@@ -531,7 +568,7 @@ export default function PlayerPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={handleInviteFriend}>
-              {copiedInvite ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />} 
+              {copiedInvite ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
               <span className="ml-1">{copiedInvite ? 'Copied' : 'Invite'}</span>
             </Button>
             <Button variant="ghost" size="sm" onClick={() => router.push('/')}>
@@ -554,7 +591,7 @@ export default function PlayerPage() {
                     </AlertDescription>
                 </Alert>
             )}
-            {syncError && roomState && (
+            {syncError && roomState && ( // Show inline error if roomState is partially available
               <Alert variant="destructive" className="mb-4">
                 <WifiOff className="h-4 w-4" />
                 <AlertTitle>Connection Issue</AlertTitle>
@@ -609,7 +646,7 @@ export default function PlayerPage() {
           </div>
 
           {(queue.length > 0 && upNextQueue.length > 0) && (
-            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-none">
+            <Card className="shadow-lg bg-card flex flex-col min-h-0 max-h-[300px] lg:max-h-[calc(100vh-70vh-2rem)]"> {/* Adjusted max-height */}
               <CardHeader><CardTitle className="text-card-foreground">Up Next ({upNextQueue.length})</CardTitle></CardHeader>
               <CardContent className="flex-grow p-0 overflow-hidden">
                 <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
@@ -638,7 +675,7 @@ export default function PlayerPage() {
               <Input type="search" placeholder="Search artists or songs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="flex-grow" disabled={apiKeyMissing || isSearchLoading} />
               <Button type="submit" size="icon" aria-label="Search" disabled={apiKeyMissing || isSearchLoading || !searchQuery.trim()}><Search /></Button>
             </form>
-            {apiKeyMissing && !isSearchLoading && ( 
+            {apiKeyMissing && !isSearchLoading && (
                  <Alert variant="destructive" className="mt-2">
                     <AlertTriangle className="h-4 w-4" />
                     <AlertTitle>API Key Missing</AlertTitle>
@@ -677,13 +714,13 @@ export default function PlayerPage() {
               </CardContent>
             </Card>
           )}
-          {(queue.length === 0) && suggestedSongs.length === 0 && !isLoadingSuggestions && !apiKeyMissing && ( 
-            <Card className="shadow-lg bg-card p-4 text-center text-muted-foreground"> 
-                <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> 
-                <p className="text-sm">Add songs to the queue to see suggestions.</p> 
-            </Card> 
+          {(queue.length === 0) && suggestedSongs.length === 0 && !isLoadingSuggestions && !apiKeyMissing && (
+            <Card className="shadow-lg bg-card p-4 text-center text-muted-foreground">
+                <ThumbsUp className="h-10 w-10 mx-auto mb-2"/>
+                <p className="text-sm">Add songs to the queue to see suggestions.</p>
+            </Card>
           )}
-          
+
           <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
             <CardHeader>
               <CardTitle className="text-card-foreground flex items-center gap-2">
@@ -698,8 +735,8 @@ export default function PlayerPage() {
                   )}
                   {chatMessages.map((chat) => (
                     <div key={chat.id} className="text-sm">
-                       <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1 text-amber-400" />}</span> 
-                      <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.username}: </span>
+                      <span className={`font-semibold ${chat.userId === hostId ? 'text-amber-400' : 'text-primary'}`}>{chat.userId === hostId && <Crown className="h-3 w-3 inline-block mr-1 text-amber-400" />}
+                        {chat.username}: </span>
                       <span className="text-foreground break-words">{chat.message}</span>
                       <p className="text-xs text-muted-foreground/70 mt-0.5">
                         {formatDistanceToNow(new Date(chat.timestamp), { addSuffix: true })}
@@ -711,8 +748,8 @@ export default function PlayerPage() {
             </CardContent>
             <CardFooter className="p-2 border-t border-border">
               <form onSubmit={handleSendChatMessage} className="flex w-full gap-2">
-                <Input 
-                  type="text" 
+                <Input
+                  type="text"
                   placeholder={currentUser ? "Type a message..." : "Log in to chat"}
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
