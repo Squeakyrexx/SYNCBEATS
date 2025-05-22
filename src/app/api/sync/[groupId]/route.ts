@@ -7,7 +7,7 @@ import {
   removeSSEClient,
   initializeRoom,
   addChatMessageToRoom,
-  updateUserPermission, // Ensure this is imported
+  updateUserPermission,
 } from '@/lib/room-store';
 import type { RoomState, ChatMessage, RoomUser } from '@/types';
 
@@ -25,27 +25,20 @@ export async function GET(
     return new Response('Missing groupId', { status: 400 });
   }
 
+  let keepAliveInterval: NodeJS.Timeout | undefined = undefined;
+
   const stream = new ReadableStream({
     start(controller) {
-      let keepAliveInterval: NodeJS.Timeout | undefined = undefined;
       console.log(`[SSE /api/sync/${groupId}] Stream starting...`);
       try {
         addSSEClient(groupId, controller);
         
-        let currentRoomState = getRoomState(groupId); // This calls initializeRoom if room doesn't exist
+        let currentRoomState = getRoomState(groupId);
         if (!currentRoomState) {
-          // This should ideally not happen if getRoomState correctly calls initializeRoom
-          // or if addSSEClient already ensures room initialization for new groupIds.
-          // For safety, we can re-attempt initialization or error out.
-          console.warn(`[SSE /api/sync/${groupId}] Room not found after getRoomState, attempting to initialize again.`);
-          currentRoomState = initializeRoom(groupId); 
-          if (!currentRoomState) {
-            const err = new Error("Failed to get or initialize room state for SSE.");
-            console.error(`[SSE CRITICAL /api/sync/${groupId}]`, err.message);
-            controller.error(err);
-            try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
-            return;
-          }
+          console.warn(`[SSE /api/sync/${groupId}] Room not found by getRoomState, attempting to initialize implicitly via update call (will happen on first client action).`);
+          // Initialize a minimal state if the room truly doesn't exist yet,
+          // it will be fully populated by the first client action (like announcing presence)
+          currentRoomState = initializeRoom(groupId);
         }
         
         const initialDataString = JSON.stringify(currentRoomState);
@@ -63,28 +56,33 @@ export async function GET(
             } else {
               console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null for keep-alive, closing. Size: ${controller.desiredSize}`);
               if (keepAliveInterval) clearInterval(keepAliveInterval);
+              keepAliveInterval = undefined;
               removeSSEClient(groupId, controller); 
               try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
             }
           } catch (e) {
             console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
             if (keepAliveInterval) clearInterval(keepAliveInterval);
+            keepAliveInterval = undefined;
             removeSSEClient(groupId, controller);
             try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
           }
-        }, 25000); 
+        }, 10000); // Reduced keep-alive interval to 10 seconds
 
 
         request.signal.addEventListener('abort', () => {
-          console.log(`[SSE /api/sync/${groupId}] Request aborted, cleaning up.`);
+          console.log(`[SSE /api/sync/${groupId}] Request aborted by client, cleaning up.`);
           if (keepAliveInterval) clearInterval(keepAliveInterval);
+          keepAliveInterval = undefined;
           removeSSEClient(groupId, controller);
           try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
         });
+
       } catch (e: unknown) {
         const error = e instanceof Error ? e : new Error(String(e));
         console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, error.message, error.stack);
         if (keepAliveInterval) clearInterval(keepAliveInterval);
+        keepAliveInterval = undefined;
         removeSSEClient(groupId, controller); 
         try {
           if (controller.desiredSize !== null) { 
@@ -104,7 +102,9 @@ export async function GET(
     },
     cancel(_reason) {
       console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
-      // Cleanup logic is mostly in 'abort' event and keep-alive interval checks.
+      if (keepAliveInterval) clearInterval(keepAliveInterval);
+      keepAliveInterval = undefined;
+      removeSSEClient(groupId, controller); // Ensure cleanup on cancel as well
     }
   });
 
@@ -119,7 +119,7 @@ export async function GET(
 }
 
 interface PostBody {
-  type: 'STATE_UPDATE' | 'CHAT_MESSAGE' | 'UPDATE_USER_PERMISSION'; // Added 'UPDATE_USER_PERMISSION'
+  type: 'STATE_UPDATE' | 'CHAT_MESSAGE' | 'UPDATE_USER_PERMISSION';
   payload: any; 
   userId?: string; 
   username?: string; 
@@ -137,7 +137,7 @@ export async function POST(
 
   try {
     const body = await request.json() as PostBody;
-    const rawBodyString = JSON.stringify(body); // For logging
+    const rawBodyString = JSON.stringify(body);
     console.log(`[POST /api/sync/${groupId}] Received raw body: ${rawBodyString.substring(0, 300)}${rawBodyString.length > 300 ? '...' : ''}`);
     console.log(`[POST /api/sync/${groupId}] Received body.type: |${body.type}|`);
     console.log(`[POST /api/sync/${groupId}] Received full body object:`, body);
@@ -166,7 +166,7 @@ export async function POST(
         timestamp: Date.now(),
       };
       
-      const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage); // This calls updateRoomStateAndBroadcast internally
+      const updatedRoomStateWithChat = addChatMessageToRoom(groupId, newChatMessage);
       if (updatedRoomStateWithChat) {
         return NextResponse.json(updatedRoomStateWithChat, { status: 200 });
       } else {
@@ -193,7 +193,6 @@ export async function POST(
       if (updatedRoom) {
         return NextResponse.json(updatedRoom, { status: 200 });
       } else {
-        // updateUserPermission handles its own logging for reasons like "not host" or "user not found"
         console.error(`[POST /api/sync/${groupId} UPDATE_USER_PERMISSION] Failed to update permission, or room/user not found. Host: ${actingUserId}, Target: ${targetUserId}`);
         return NextResponse.json({ error: 'Failed to update permission. User might not be host, or target user/room not found.' }, { status: 403 }); 
       }
@@ -212,5 +211,3 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
-
-    
