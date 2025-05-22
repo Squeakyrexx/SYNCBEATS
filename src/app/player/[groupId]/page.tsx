@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Logo } from '@/components/Logo';
-import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, ThumbsUp, Loader2, WifiOff, Send, MessageCircle, Crown, Users } from 'lucide-react';
+import { Search, LogOut, Share2, PlayCircle, ListMusic, AlertTriangle, Check, SkipForward, Loader2, WifiOff, Send, MessageCircle, Crown, Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -66,10 +66,6 @@ export default function PlayerPage() {
   const [youtubeApiReady, setYoutubeApiReady] = useState(false);
   const initializingPlayerRef = useRef(false);
   const isProgrammaticPlayPauseRef = useRef(false);
-
-  const [suggestedSongs, setSuggestedSongs] = useState<Song[]>([]); // For "You Might Like" UI
-  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false); // For "You Might Like" UI
-  const suggestionDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   const [newMessage, setNewMessage] = useState('');
   const chatScrollAreaRef = useRef<HTMLDivElement>(null);
@@ -173,7 +169,7 @@ export default function PlayerPage() {
         clearTimeout(sseTimeoutRef.current);
         sseTimeoutRef.current = null;
       }
-      setSyncError(null);
+      setSyncError(null); 
       
       if (currentUser && !announcedPresenceRef.current) {
         console.log(`[PlayerPage] SSE opened, announcing presence for user: ${currentUser.username} in group ${groupIdFromParams}`);
@@ -251,7 +247,7 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  }, [groupIdFromParams, currentUser, toast, isRoomLoading, syncError]); 
+  }, [groupIdFromParams, currentUser, toast, router, isRoomLoading, syncError]); 
 
 
   useEffect(() => {
@@ -307,26 +303,25 @@ export default function PlayerPage() {
   }, [isCurrentUserHost, currentUser, updateServerRoomState, toast]);
 
   const onPlayerReady = useCallback((event: any) => {
-    // console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
+    console.log("[PlayerPage onPlayerReady] Player ready. Event target:", event.target);
     const player = event.target;
     if (player && typeof player.getPlayerState === 'function' && typeof player.playVideo === 'function') {
         const currentState = player.getPlayerState();
         const currentServerIsPlaying = roomStateRef.current?.isPlaying ?? false;
         
-        // Ensure player starts if server expects it to play, or if it's unstarted/cued.
-        if (currentServerIsPlaying || currentState === -1 || currentState === window.YT.PlayerState.CUED ) {
-            if (currentServerIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
-                // console.log("[PlayerPage onPlayerReady] Player ready, server says playing or video cued. Attempting to play.");
-                 isProgrammaticPlayPauseRef.current = true;
-                 player.playVideo();
-                 setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
-            } else if (!currentServerIsPlaying && currentState === window.YT.PlayerState.PLAYING) {
-                // console.log("[PlayerPage onPlayerReady] Player ready, server says NOT playing, player IS. Attempting to pause.");
-                 isProgrammaticPlayPauseRef.current = true;
-                 player.pauseVideo();
-                 setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
-            }
+        if (currentServerIsPlaying && (currentState === -1 || currentState === window.YT.PlayerState.CUED || currentState === window.YT.PlayerState.PAUSED)) {
+            console.log("[PlayerPage onPlayerReady] Player ready, server expects playing. Attempting playVideo().");
+            isProgrammaticPlayPauseRef.current = true;
+            player.playVideo();
+            setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
+        } else if (!currentServerIsPlaying && currentState === window.YT.PlayerState.PLAYING) {
+            console.log("[PlayerPage onPlayerReady] Player ready, server expects paused, player is playing. Attempting pauseVideo().");
+            isProgrammaticPlayPauseRef.current = true;
+            player.pauseVideo();
+            setTimeout(() => isProgrammaticPlayPauseRef.current = false, 150);
         }
+    } else {
+        console.warn("[PlayerPage onPlayerReady] Player or its methods not available.");
     }
   }, []); 
 
@@ -344,7 +339,7 @@ export default function PlayerPage() {
 
   const onPlayerStateChange = useCallback((event: any) => {
     // console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
-    if (!window.YT || !window.YT.PlayerState || !currentUser) return;
+    if (!window.YT || !window.YT.PlayerState || !currentUser || !roomStateRef.current) return;
 
     if (isProgrammaticPlayPauseRef.current) {
         // console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
@@ -369,7 +364,7 @@ export default function PlayerPage() {
         // console.log("[PlayerPage onPlayerStateChange] Song ended, host playing next (manual queue).");
         playNextSongInQueue();
       }
-      return; // Autoplay logic will be triggered by a separate useEffect
+      return; 
     }
 
     if (newIsPlayingState !== undefined) {
@@ -385,7 +380,7 @@ export default function PlayerPage() {
       return;
     }
     initializingPlayerRef.current = true;
-    // console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
+    console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
 
     if (playerRef.current && typeof playerRef.current.destroy === 'function') {
       // console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
@@ -445,12 +440,8 @@ export default function PlayerPage() {
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) playerDiv.innerHTML = ''; 
       // console.log("[PlayerPage PlayerEffect] No current song, player container cleared.");
-      if (isAutoplayEnabled && lastPlayedSongForAutoplay) {
-        // console.log("[PlayerPage PlayerEffect] No current song, but Autoplay is on. Clearing lastPlayedSongForAutoplay to prevent immediate trigger if queue was intentionally cleared.");
-        // setLastPlayedSongForAutoplay(null); // Keep last song to allow autoplay to pick up if queue was cleared
-      }
     }
-  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, isAutoplayEnabled, lastPlayedSongForAutoplay]);
+  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState]);
 
   useEffect(() => {
     if (!playerRef.current || typeof playerRef.current.getPlayerState !== 'function' || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) {
@@ -494,7 +485,6 @@ export default function PlayerPage() {
 
     setIsSearchLoading(true);
     setSearchResults([]);
-    if (suggestedSongs.length > 0) setSuggestedSongs([]); 
 
     // console.log(`[PlayerPage handleSearch] Searching for: ${searchQuery}`);
     try {
@@ -525,85 +515,6 @@ export default function PlayerPage() {
         setIsSearchLoading(false);
     }
   };
-
-  const handleFetchSuggestionsForUI = useCallback(async (basisSong: Song | null) => {
-    if (apiKeyMissing || !basisSong || !basisSong.artist) {
-      if (suggestedSongs.length > 0 && !isLoadingSuggestions) setSuggestedSongs([]);
-      return;
-    }
-    console.log(`[PlayerPage handleFetchSuggestionsForUI] Fetching UI suggestions based on: ${basisSong.title}`);
-    setIsLoadingSuggestions(true);
-    try {
-      const suggestionQuery = basisSong.artist; // Simple query by artist
-      const searchResponse = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(suggestionQuery)}&type=video&videoCategoryId=10&maxResults=7&key=${YOUTUBE_API_KEY}`
-      );
-
-      if (!searchResponse.ok) {
-        const errorData = await searchResponse.json().catch(() => ({}));
-        const description = `UI Suggestion API request failed: ${searchResponse.status} ${searchResponse.statusText}. ${errorData?.error?.message || ''}`;
-        toast({ title: "Suggestion Error", description, variant: "destructive", duration: 7000});
-        setSuggestedSongs([]); // Clear on error
-        return;
-      }
-
-      const data = await searchResponse.json();
-      const items = data.items || [];
-      if (items.length === 0 && searchResponse.ok && !isLoadingSuggestions) {
-          // toast({ title: "No UI Suggestions", description: "API found no videos for this artist.", duration: 3000 });
-      }
-
-      const currentQ = roomStateRef.current?.queue || [];
-      const currentPlayingId = roomStateRef.current?.queue?.[roomStateRef.current?.currentQueueIndex ?? -1]?.id;
-
-      const newSuggestions: Song[] = items
-        .map((item: any): Song => ({
-            id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
-            channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video",
-        }))
-        .filter(newSong => {
-          const isInQueue = currentQ.some(qSong => qSong.id === newSong.id);
-          const isTheSuggestionBaseSong = newSong.id === basisSong.id;
-          const isCurrentlyPlaying = newSong.id === currentPlayingId;
-          return !isInQueue && !isTheSuggestionBaseSong && !isCurrentlyPlaying;
-        });
-      setSuggestedSongs(newSuggestions.slice(0, 5));
-    } catch (error) {
-        console.error("[PlayerPage handleFetchSuggestionsForUI] Error fetching UI suggestions:", error);
-        toast({ title: "Suggestion Failed", description: "Error fetching UI suggestions.", variant: "destructive"});
-        if (!isLoadingSuggestions) setSuggestedSongs([]); // Clear on error only if not already loading
-    } finally {
-        setIsLoadingSuggestions(false);
-    }
-  }, [apiKeyMissing, YOUTUBE_API_KEY, toast, isLoadingSuggestions]); 
-
-
-  useEffect(() => { // For "You Might Like" UI suggestions, triggered by currentPlayingSong
-    if (apiKeyMissing) {
-      if (suggestedSongs.length > 0) setSuggestedSongs([]);
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-      return;
-    }
-
-    if (currentPlayingSong && currentPlayingSong.id && currentPlayingSong.artist) {
-      // console.log(`[PlayerPage SuggestionEffectForUI] Current song changed to: ${currentPlayingSong.title}. Debouncing UI suggestion fetch.`);
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-
-      const songForDebounce = { ...currentPlayingSong }; 
-      suggestionDebounceTimer.current = setTimeout(() => {
-        handleFetchSuggestionsForUI(songForDebounce);
-      }, 1500);
-    } else {
-      // console.log("[PlayerPage SuggestionEffectForUI] No current song for UI suggestions. Clearing.");
-      if (suggestedSongs.length > 0) setSuggestedSongs([]);
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-    }
-
-    return () => {
-      if (suggestionDebounceTimer.current) clearTimeout(suggestionDebounceTimer.current);
-    };
-  }, [currentPlayingSong, apiKeyMissing, handleFetchSuggestionsForUI]);
-
 
   const handleSelectSong = useCallback((song: Song) => {
     if (!currentUser) {
@@ -676,7 +587,6 @@ export default function PlayerPage() {
     }
     // console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
     updateServerRoomState({ queue: [], currentQueueIndex: -1, isPlaying: false, lastPlaybackChangeBy: currentUser.id });
-    if (suggestedSongs.length > 0) setSuggestedSongs([]); 
     if (lastPlayedSongForAutoplay) setLastPlayedSongForAutoplay(null);
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
   };
@@ -756,7 +666,7 @@ export default function PlayerPage() {
         toast({ title: "Permissions Updated", description: `Song adding permission for user ${targetUsername} set to ${newPermission ? 'allowed' : 'disallowed'}.` });
       }
     } catch (error) {
-      toast({ title: "Network Error", description: "Failed to update user permission.", variant: "destructive" });
+      toast({ title: "NetworkError", description: "Failed to update user permission.", variant: "destructive" });
       console.error("Error updating user permission:", error);
     }
   };
@@ -809,17 +719,16 @@ export default function PlayerPage() {
         // console.log('[PlayerPage initiateAutoplay] Conditions not met or already initiated by host.');
         return;
     }
-    // console.log('[PlayerPage initiateAutoplay] Host attempting to initiate autoplay.');
+    console.log('[PlayerPage initiateAutoplay] Host attempting to initiate autoplay.');
     autoplayInitiatedByHostRef.current = true; 
     
     const candidates = await fetchAutoplaySuggestions(lastPlayedSongForAutoplay);
     if (candidates.length > 0) {
-        // console.log(`[PlayerPage initiateAutoplay] Autoplay found ${candidates.length} candidates. Adding batch to queue.`);
+        console.log(`[PlayerPage initiateAutoplay] Autoplay found ${candidates.length} candidates. Adding batch to queue.`);
         const currentQ = roomStateRef.current?.queue || [];
-        const newQueue = [...currentQ, ...candidates]; // Add all fetched candidates
+        const newQueue = [...currentQ, ...candidates];
 
-        // The first song of the candidates batch will become the new current song.
-        const newIndex = currentQ.length > 0 ? currentQ.length : 0; // Index of the first new song. If queue was empty, it's 0.
+        const newIndex = currentQ.length > 0 ? currentQ.length : 0; 
 
         updateServerRoomState({
             queue: newQueue,
@@ -829,28 +738,27 @@ export default function PlayerPage() {
         });
         
         toast({ title: "Autoplay", description: `Added ${candidates.length} song(s) to the queue.` });
-        // lastPlayedSongForAutoplay will be updated via onPlayerStateChange when the new song starts.
     } else {
       toast({ title: "Autoplay", description: "Couldn't find any suitable next songs for autoplay." });
-      // console.log('[PlayerPage initiateAutoplay] Autoplay found no candidates.');
+      console.log('[PlayerPage initiateAutoplay] Autoplay found no candidates.');
     }
     
-    setTimeout(() => { // Reset ref to allow next autoplay cycle
+    setTimeout(() => { 
         autoplayInitiatedByHostRef.current = false;
-    }, 3000); // Give some time for state to propagate & player to react
+    }, 3000);
 
   }, [lastPlayedSongForAutoplay, fetchAutoplaySuggestions, updateServerRoomState, toast, isCurrentUserHost, currentUser]);
 
-  useEffect(() => { // Effect to trigger Autoplay when manual queue ends
+  useEffect(() => { 
     if (isAutoplayEnabled && isCurrentUserHost && roomState?.currentQueueIndex === -1 && lastPlayedSongForAutoplay) {
-      // console.log("[PlayerPage AutoplayEffect] Conditions met, initiating autoplay sequence.");
+      console.log("[PlayerPage AutoplayEffect] Conditions met, initiating autoplay sequence.");
       initiateAutoplay();
     }
   }, [isAutoplayEnabled, roomState?.currentQueueIndex, isCurrentUserHost, lastPlayedSongForAutoplay, initiateAutoplay]);
 
 
   const upNextQueue = queue.slice((roomState?.currentQueueIndex ?? -1) + 1);
-  const activeUsers = roomUsers; 
+  const activeUsers = roomUsers;
 
 
   if (isRoomLoading) {
@@ -1011,7 +919,7 @@ export default function PlayerPage() {
           )}
         </div>
 
-        {/* Right Panel: Search, Suggestions, Participants & Chat */}
+        {/* Right Panel: Search, Participants & Chat */}
         <div className="lg:w-1/3 flex flex-col gap-4">
             <Card className="shadow-lg bg-card p-4 space-y-3">
                 <h3 className="text-xl font-semibold text-foreground">Search Songs</h3>
@@ -1064,50 +972,6 @@ export default function PlayerPage() {
                   </div>
                 </ScrollArea>
               </CardContent>
-            </Card>
-          )}
-
-           {/* "You Might Like" Suggestions UI */}
-           {(isLoadingSuggestions || suggestedSongs.length > 0 || (currentPlayingSong && !isLoadingSuggestions && suggestedSongs.length === 0 && !apiKeyMissing)) && (
-            <Card className="shadow-lg bg-card flex-1 flex flex-col min-h-0">
-              <CardHeader><CardTitle className="text-card-foreground flex items-center gap-2"><ThumbsUp className="text-primary"/>{isLoadingSuggestions ? "Loading Suggestions..." : "You Might Like"}</CardTitle></CardHeader>
-              <CardContent className="flex-grow p-0 overflow-hidden">
-                <ScrollArea className="h-full max-h-[300px] px-4 pb-4">
-                  <div className="space-y-3">
-                    {isLoadingSuggestions && Array.from({ length: 2 }).map((_, index) => ( <Card key={`skeleton-suggest-${index}`} className="flex items-center p-3 gap-3 bg-muted/50"> <Skeleton className="h-[60px] w-[80px] rounded bg-muted-foreground/20" /> <div className="space-y-1.5 flex-1"> <Skeleton className="h-5 w-3/4 bg-muted-foreground/20" /> <Skeleton className="h-4 w-1/2 bg-muted-foreground/20" /></div> <Skeleton className="h-8 w-8 rounded-full bg-muted-foreground/20" /> </Card>))}
-                    {!isLoadingSuggestions && suggestedSongs.map((song) => (
-                         <Tooltip key={song.id + "-suggestion-tooltip"} delayDuration={canCurrentUserAddSongs ? 500 : 0}>
-                            <TooltipTrigger asChild>
-                                <Card
-                                    className={`flex items-center p-3 gap-3 transition-all bg-muted/50 ${canCurrentUserAddSongs ? 'hover:bg-muted/70 hover:shadow-md cursor-pointer' : 'opacity-70 cursor-not-allowed'}`}
-                                    onClick={() => {
-                                        if (canCurrentUserAddSongs) handleSelectSong(song);
-                                        else toast({ title: "Permission Denied", description: addSongPermissionTooltip, variant: "destructive" });
-                                    }}
-                                    tabIndex={canCurrentUserAddSongs ? 0 : -1}
-                                    onKeyDown={(e) => canCurrentUserAddSongs && e.key === 'Enter' && handleSelectSong(song)}
-                                    aria-disabled={!canCurrentUserAddSongs}
-                                >
-                                    <Image src={song.thumbnailUrl} alt={song.title} width={80} height={60} className="rounded object-cover aspect-[4/3]" data-ai-hint={song.dataAiHint || "music video"} unoptimized={song.thumbnailUrl.includes('ytimg.com')} />
-                                    <div className="flex-1 min-w-0"> <p className="font-semibold truncate text-foreground" title={song.title}>{song.title}</p> <p className="text-sm text-muted-foreground truncate" title={song.artist}>{song.artist}</p> </div>
-                                    <Button variant="ghost" size="icon" disabled={!canCurrentUserAddSongs} className={`${!canCurrentUserAddSongs && 'pointer-events-none'}`}>
-                                        <PlayCircle className={canCurrentUserAddSongs ? "text-primary" : "text-muted-foreground"}/>
-                                    </Button>
-                                </Card>
-                            </TooltipTrigger>
-                            {!canCurrentUserAddSongs && <TooltipContent><p>{addSongPermissionTooltip}</p></TooltipContent>}
-                        </Tooltip>
-                    ))}
-                    {!isLoadingSuggestions && suggestedSongs.length === 0 && currentPlayingSong && !apiKeyMissing && ( <div className="text-center py-4 text-muted-foreground"> <ThumbsUp className="h-10 w-10 mx-auto mb-2"/> <p className="text-sm">No new suggestions for this artist.</p> <p className="text-xs">Try a different song to get new suggestions.</p> </div> )}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-          )}
-          {(!currentPlayingSong || apiKeyMissing) && suggestedSongs.length === 0 && !isLoadingSuggestions && (
-            <Card className="shadow-lg bg-card p-4 text-center text-muted-foreground">
-                <ThumbsUp className="h-10 w-10 mx-auto mb-2"/>
-                <p className="text-sm">{apiKeyMissing ? "Suggestions disabled (API key missing)." : "Play a song to see suggestions."}</p>
             </Card>
           )}
 
@@ -1210,3 +1074,4 @@ export default function PlayerPage() {
   );
 }
 
+    
