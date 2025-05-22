@@ -20,7 +20,7 @@ import { AuthContext } from '@/context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
-import { Label } from '@/components/ui/label';
+import { Label } from "@/components/ui/label";
 
 
 declare global {
@@ -33,6 +33,12 @@ declare global {
 const YOUTUBE_API_KEY = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 const PLAYER_CONTAINER_ID = 'youtube-player-container';
 const SSE_CONNECTION_TIMEOUT_MS = 15000; // 15 seconds
+
+const PREDEFINED_GENRE_KEYWORDS = [
+  "rock", "pop", "electronic", "edm", "hip hop", "rap", "r&b", "soul", "funk", 
+  "jazz", "blues", "country", "folk", "reggae", "latin", "classical", "metal", 
+  "punk", "indie", "alternative", "acoustic", "ambient", "dance", "disco"
+];
 
 export default function PlayerPage() {
   const params = useParams();
@@ -95,7 +101,7 @@ export default function PlayerPage() {
 
   const updateServerRoomState = useCallback(async (newState: Partial<RoomState>) => {
     if (!groupIdFromParams) return;
-    // console.log(`[PlayerPage updateServerRoomState] Sending update to server:`, newState);
+    console.log(`[PlayerPage updateServerRoomState] Sending update to server:`, newState);
     try {
       const requestBody: { type: string; payload: Partial<RoomState>; userId?: string; username?: string } = {
         type: 'STATE_UPDATE',
@@ -115,7 +121,7 @@ export default function PlayerPage() {
         const errorData = await response.json();
         toast({ title: "Sync Error", description: errorData.error || "Failed to update room state.", variant: "destructive" });
       } else {
-        // console.log(`[PlayerPage updateServerRoomState] Server update successful for:`, newState);
+        console.log(`[PlayerPage updateServerRoomState] Server update successful for:`, newState);
       }
     } catch (error) {
       toast({ title: "Network Error", description: "Failed to sync with server.", variant: "destructive" });
@@ -204,12 +210,12 @@ export default function PlayerPage() {
         const newRoomState: RoomState = JSON.parse(event.data);
         console.log('[PlayerPage] Parsed newRoomState.users:', newRoomState.users);
         setRoomState(newRoomState);
-        setSyncError(null); 
+        if (syncError) setSyncError(null);
       } catch (error) {
         console.error("[PlayerPage] Error parsing SSE message:", error, "Raw data:", event.data);
         setSyncError("Error processing room data.");
       } finally {
-        setIsRoomLoading(false); 
+        if(isRoomLoading) setIsRoomLoading(false); 
       }
     };
 
@@ -220,11 +226,10 @@ export default function PlayerPage() {
         sseTimeoutRef.current = null;
       }
       let errorMsg = "Connection to the sync server failed. Changes might not be saved or seen by others.";
-      const currentSyncError = syncError; // Capture current syncError from closure
-      if (currentSyncError && currentSyncError.includes("timed out")) { 
-          errorMsg = currentSyncError; 
+      if (syncError && syncError.includes("timed out")) { 
+          errorMsg = syncError; 
       } else {
-         if (!currentSyncError) {
+         if (!syncError) {
             toast({ title: "Connection Lost", description: "Lost connection to the sync server. Please try refreshing.", variant: "destructive", duration: 10000 });
          }
       }
@@ -247,7 +252,7 @@ export default function PlayerPage() {
         eventSourceRef.current = null;
       }
     };
-  }, [groupIdFromParams, currentUser, toast, router, isRoomLoading, syncError]); 
+  }, [groupIdFromParams, currentUser, toast]); 
 
 
   useEffect(() => {
@@ -271,18 +276,18 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
-      // console.log("[PlayerPage YouTubeAPIEffect] YouTube API already loaded (window.YT.Player exists).");
+      console.log("[PlayerPage YouTubeAPIEffect] YouTube API already loaded (window.YT.Player exists).");
       setYoutubeApiReady(true);
       return;
     }
     if (typeof window !== 'undefined' && !apiLoadedRef.current) {
-      // console.log("[PlayerPage YouTubeAPIEffect] Loading YouTube Iframe API script.");
+      console.log("[PlayerPage YouTubeAPIEffect] Loading YouTube Iframe API script.");
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
       document.head.appendChild(tag);
       apiLoadedRef.current = true;
       window.onYouTubeIframeAPIReady = () => {
-        // console.log("[PlayerPage YouTubeAPIEffect] window.onYouTubeIframeAPIReady fired.");
+        console.log("[PlayerPage YouTubeAPIEffect] window.onYouTubeIframeAPIReady fired.");
         setYoutubeApiReady(true);
       };
     }
@@ -290,7 +295,7 @@ export default function PlayerPage() {
 
   const playNextSongInQueue = useCallback(() => {
     if (!isCurrentUserHost || !currentUser) return;
-    // console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
+    console.log("[PlayerPage playNextSongInQueue] Host trying to play next song.");
     const currentQ = roomStateRef.current?.queue || [];
     const currentIdx = roomStateRef.current?.currentQueueIndex ?? -1;
 
@@ -338,37 +343,37 @@ export default function PlayerPage() {
   }, [toast, playNextSongInQueue, isCurrentUserHost, currentUser]);
 
   const onPlayerStateChange = useCallback((event: any) => {
-    // console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
+    console.log("[PlayerPage onPlayerStateChange] Player state changed to:", event.data, "isProgrammaticPlayPauseRef:", isProgrammaticPlayPauseRef.current);
     if (!window.YT || !window.YT.PlayerState || !currentUser || !roomStateRef.current) return;
 
     if (isProgrammaticPlayPauseRef.current) {
-        // console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
+        console.log("[PlayerPage onPlayerStateChange] Programmatic change, ignoring.");
         return;
     }
 
     const playerState = event.data;
     let newIsPlayingState: boolean | undefined = undefined;
-    const currentPlayingSongFromState = roomStateRef.current?.queue?.[roomStateRef.current?.currentQueueIndex ?? -1];
+    const currentSongFromState = roomStateRef.current?.queue?.[roomStateRef.current?.currentQueueIndex ?? -1];
 
 
     if (playerState === window.YT.PlayerState.PLAYING) {
       newIsPlayingState = true;
-      if (isAutoplayEnabled && currentPlayingSongFromState) {
-        // console.log("[PlayerPage onPlayerStateChange] PLAYING & Autoplay enabled, setting lastPlayedSongForAutoplay:", currentPlayingSongFromState.title);
-        setLastPlayedSongForAutoplay(currentPlayingSongFromState);
+      if (isAutoplayEnabled && currentSongFromState) {
+        console.log("[PlayerPage onPlayerStateChange] PLAYING & Autoplay enabled, setting lastPlayedSongForAutoplay:", currentSongFromState.title);
+        setLastPlayedSongForAutoplay(currentSongFromState);
       }
     } else if (playerState === window.YT.PlayerState.PAUSED) {
       newIsPlayingState = false;
     } else if (playerState === window.YT.PlayerState.ENDED) {
       if (isCurrentUserHost) { 
-        // console.log("[PlayerPage onPlayerStateChange] Song ended, host playing next (manual queue).");
+        console.log("[PlayerPage onPlayerStateChange] Song ended, host playing next (manual queue).");
         playNextSongInQueue();
       }
       return; 
     }
 
     if (newIsPlayingState !== undefined) {
-      // console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Current serverIsPlaying: ${roomStateRef.current?.isPlaying}`);
+      console.log(`[PlayerPage onPlayerStateChange] User-initiated change. New isPlaying: ${newIsPlayingState}. Current serverIsPlaying: ${roomStateRef.current?.isPlaying}`);
       updateServerRoomState({ isPlaying: newIsPlayingState, lastPlaybackChangeBy: currentUser.id });
     }
   }, [isCurrentUserHost, playNextSongInQueue, updateServerRoomState, currentUser, isAutoplayEnabled]);
@@ -383,7 +388,7 @@ export default function PlayerPage() {
     console.log(`[PlayerPage InitializePlayer] Initializing YouTube player for video ID: ${videoId}`);
 
     if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-      // console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
+      console.log("[PlayerPage InitializePlayer] Destroying existing player instance.");
       playerRef.current.destroy();
       playerRef.current = null;
     }
@@ -396,7 +401,7 @@ export default function PlayerPage() {
           playerVars: { autoplay: 1, enablejsapi: 1, controls: 1, modestbranding: 1, rel: 0 },
           events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange, 'onError': onPlayerError },
         });
-        // console.log("[PlayerPage InitializePlayer] New player instance created.");
+        console.log("[PlayerPage InitializePlayer] New player instance created.");
       } catch (e) {
         console.error("[PlayerPage InitializePlayer] Error creating YouTube player:", e);
         toast({ title: "Player Init Error", description: "Could not initialize YouTube player.", variant: "destructive" });
@@ -411,10 +416,10 @@ export default function PlayerPage() {
   }, [youtubeApiReady, onPlayerReady, onPlayerStateChange, onPlayerError, toast]);
 
   useEffect(() => {
-    // console.log(`[PlayerPage PlayerEffect] Current state - youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
+    console.log(`[PlayerPage PlayerEffect] Current state - youtubeApiReady: ${youtubeApiReady}, isRoomLoading: ${isRoomLoading}, roomState exists: ${!!roomState}, currentPlayingSong: ${currentPlayingSong?.title}`);
     if (!youtubeApiReady || isRoomLoading || !roomState) {
       if(playerRef.current && typeof playerRef.current.destroy === 'function' && !currentPlayingSong) {
-        // console.log("[PlayerPage PlayerEffect] Conditions not met for player or no current song, destroying player if exists.");
+        console.log("[PlayerPage PlayerEffect] Conditions not met for player or no current song, destroying player if exists.");
         playerRef.current.destroy();
         playerRef.current = null;
         const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
@@ -426,22 +431,26 @@ export default function PlayerPage() {
     if (currentPlayingSong) {
       const currentVideoIdInPlayer = playerRef.current?.getVideoData?.()?.video_id;
       if (currentVideoIdInPlayer !== currentPlayingSong.id) {
-        // console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title} (ID: ${currentPlayingSong.id}). Player video ID is ${currentVideoIdInPlayer}. Initializing player.`);
+        console.log(`[PlayerPage PlayerEffect] Current playing song is ${currentPlayingSong.title} (ID: ${currentPlayingSong.id}). Player video ID is ${currentVideoIdInPlayer}. Initializing player.`);
         initializePlayer(currentPlayingSong.id);
       } else {
-         // console.log(`[PlayerPage PlayerEffect] Current playing song ${currentPlayingSong.title} already loaded in player.`);
+         console.log(`[PlayerPage PlayerEffect] Current playing song ${currentPlayingSong.title} already loaded in player.`);
       }
     } else { 
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-        // console.log("[PlayerPage PlayerEffect] No current song to play, destroying player instance.");
+        console.log("[PlayerPage PlayerEffect] No current song to play, destroying player instance.");
         playerRef.current.destroy();
         playerRef.current = null;
       }
       const playerDiv = document.getElementById(PLAYER_CONTAINER_ID);
       if (playerDiv) playerDiv.innerHTML = ''; 
-      // console.log("[PlayerPage PlayerEffect] No current song, player container cleared.");
+      console.log("[PlayerPage PlayerEffect] No current song, player container cleared.");
+      if (isAutoplayEnabled && lastPlayedSongForAutoplay) { // If autoplay is on, and queue ended, clear last played song to avoid immediate trigger
+        console.log("[PlayerPage PlayerEffect] Queue ended, clearing lastPlayedSongForAutoplay to prevent immediate re-trigger of autoplay based on the very last song.");
+        setLastPlayedSongForAutoplay(null); // This allows autoplay to pick up fresh based on the next "ended" song.
+      }
     }
-  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState]);
+  }, [youtubeApiReady, currentPlayingSong, initializePlayer, isRoomLoading, roomState, isAutoplayEnabled, lastPlayedSongForAutoplay]);
 
   useEffect(() => {
     if (!playerRef.current || typeof playerRef.current.getPlayerState !== 'function' || !roomState || !currentUser || !window.YT || !window.YT.PlayerState) {
@@ -449,7 +458,7 @@ export default function PlayerPage() {
     }
 
     if (roomState.lastPlaybackChangeBy === currentUser.id) {
-      // console.log("[PlayerPage PlaySyncEffect] Playback change was by current user, ignoring server update for play/pause.");
+      console.log("[PlayerPage PlaySyncEffect] Playback change was by current user, ignoring server update for play/pause.");
       return;
     }
 
@@ -459,10 +468,10 @@ export default function PlayerPage() {
     isProgrammaticPlayPauseRef.current = true;
 
     if (serverShouldBePlaying && localPlayerState !== window.YT.PlayerState.PLAYING && localPlayerState !== window.YT.PlayerState.BUFFERING) {
-      // console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
+      console.log("[PlayerPage PlaySyncEffect] Server says PLAYING, local player is not. Playing video.");
       playerRef.current.playVideo();
     } else if (!serverShouldBePlaying && localPlayerState === window.YT.PlayerState.PLAYING) {
-      // console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
+      console.log("[PlayerPage PlaySyncEffect] Server says PAUSED, local player is playing. Pausing video.");
       playerRef.current.pauseVideo();
     }
 
@@ -486,7 +495,7 @@ export default function PlayerPage() {
     setIsSearchLoading(true);
     setSearchResults([]);
 
-    // console.log(`[PlayerPage handleSearch] Searching for: ${searchQuery}`);
+    console.log(`[PlayerPage handleSearch] Searching for: ${searchQuery}`);
     try {
       const response = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
@@ -506,7 +515,7 @@ export default function PlayerPage() {
         dataAiHint: "music video",
       }));
       setSearchResults(songs);
-      // console.log(`[PlayerPage handleSearch] Found ${songs.length} songs for query: ${searchQuery}`);
+      console.log(`[PlayerPage handleSearch] Found ${songs.length} songs for query: ${searchQuery}`);
       if (songs.length === 0) toast({ title: "No results", description: "Try a different search." });
     } catch (error) {
         console.error("Search error:", error);
@@ -543,9 +552,9 @@ export default function PlayerPage() {
       newIndex = newQueue.length - 1; 
       shouldStartPlaying = true;
       newLastPlaybackChangeById = currentUser.id;
-      // console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
+      console.log(`[PlayerPage handleSelectSong] Queue was empty. Setting newIndex to ${newIndex} for song: ${song.title}. Will start playing.`);
     } else {
-      // console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentIdx}. New song: ${song.title} added.`);
+      console.log(`[PlayerPage handleSelectSong] Queue not empty. currentQueueIndex remains ${currentIdx}. New song: ${song.title} added.`);
     }
 
     updateServerRoomState({
@@ -585,7 +594,7 @@ export default function PlayerPage() {
       toast({ title: "Action Denied", description: "Only the host can stop the player and clear the queue.", variant: "destructive" });
       return;
     }
-    // console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
+    console.log("[PlayerPage handleStopAndClear] Host stopping and clearing queue.");
     updateServerRoomState({ queue: [], currentQueueIndex: -1, isPlaying: false, lastPlaybackChangeBy: currentUser.id });
     if (lastPlayedSongForAutoplay) setLastPlayedSongForAutoplay(null);
     toast({ title: "Player Stopped", description: "Queue cleared by host." });
@@ -598,7 +607,7 @@ export default function PlayerPage() {
     }
     const currentQ = roomStateRef.current?.queue || [];
     const currentIdx = roomStateRef.current?.currentQueueIndex ?? -1;
-    // console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
+    console.log("[PlayerPage handleSkipToNext] Host skipping to next song.");
     if (currentQ.length > 0 && currentIdx < currentQ.length - 1) {
       updateServerRoomState({ currentQueueIndex: currentIdx + 1, isPlaying: true, lastPlaybackChangeBy: currentUser.id });
     } else {
@@ -643,7 +652,7 @@ export default function PlayerPage() {
       toast({ title: "Permission Denied", description: "Only the host can change song permissions.", variant: "destructive" });
       return;
     }
-    // console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
+    console.log(`[PlayerPage handleToggleSongPermission] Host ${currentUser.username} attempting to set canAddSongs=${newPermission} for user ${targetUserId}`);
     try {
       const response = await fetch(`/api/sync/${groupIdFromParams}`, {
         method: 'POST',
@@ -671,60 +680,110 @@ export default function PlayerPage() {
     }
   };
 
-  const handleToggleAutoplay = (checked: boolean) => {
+  const handleToggleAutoplaySwitch = (checked: boolean) => {
     setIsAutoplayEnabled(checked);
     if (checked && currentPlayingSong) {
-      // console.log("[PlayerPage Autoplay] Enabled, setting lastPlayedSongForAutoplay:", currentPlayingSong.title);
+      console.log("[PlayerPage Autoplay] Autoplay Switch Enabled, setting lastPlayedSongForAutoplay:", currentPlayingSong.title);
       setLastPlayedSongForAutoplay(currentPlayingSong);
     } else if (!checked) {
-      // console.log("[PlayerPage Autoplay] Disabled, clearing lastPlayedSongForAutoplay.");
+      console.log("[PlayerPage Autoplay] Autoplay Switch Disabled, clearing lastPlayedSongForAutoplay.");
       setLastPlayedSongForAutoplay(null);
     }
   };
   
-  const fetchAutoplaySuggestions = useCallback(async (basisSong: Song): Promise<Song[]> => {
-    if (apiKeyMissing || !basisSong || !basisSong.artist) {
+  const fetchAutoplaySuggestions = useCallback(async (basisSong: Song | null): Promise<Song[]> => {
+    if (apiKeyMissing || !basisSong || !basisSong.id || !basisSong.artist) {
+      if (!basisSong) console.log("[Autoplay] No basis song for suggestions.");
+      else if (apiKeyMissing) console.log("[Autoplay] API key missing for suggestions.");
+      else console.log("[Autoplay] Basis song missing id or artist for suggestions.");
       return [];
     }
-    // console.log(`[PlayerPage fetchAutoplaySuggestions] Fetching based on: ${basisSong.title} by ${basisSong.artist}`);
+    console.log(`[Autoplay] Fetching suggestions based on: ${basisSong.title} by ${basisSong.artist}`);
+
+    let genreHint = "";
     try {
-      const query = basisSong.artist; 
-      const response = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}` // Fetch more to have choices
+      const videoDetailsResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id=${basisSong.id}&key=${YOUTUBE_API_KEY}`
       );
-      if (!response.ok) {
-        console.error("Autoplay suggestion API error:", await response.text());
+      if (videoDetailsResponse.ok) {
+        const videoData = await videoDetailsResponse.json();
+        if (videoData.items && videoData.items.length > 0) {
+          const videoDetails = videoData.items[0];
+          // Try topicCategories first
+          if (videoDetails.topicDetails?.topicCategories) {
+            for (const categoryUrl of videoDetails.topicDetails.topicCategories) {
+              if (typeof categoryUrl === 'string' && categoryUrl.startsWith("https://en.wikipedia.org/wiki/")) {
+                genreHint = decodeURIComponent(categoryUrl.substring("https://en.wikipedia.org/wiki/".length)).replace(/_/g, " ");
+                if (genreHint) break; 
+              }
+            }
+          }
+          // If no genre from topics, try tags
+          if (!genreHint && videoDetails.snippet?.tags) {
+            for (const tag of videoDetails.snippet.tags) {
+              const lowerTag = tag.toLowerCase();
+              if (PREDEFINED_GENRE_KEYWORDS.includes(lowerTag)) {
+                genreHint = lowerTag;
+                break;
+              }
+            }
+          }
+          console.log(`[Autoplay] Extracted genre hint: "${genreHint}" for ${basisSong.title}`);
+        }
+      } else {
+        console.warn(`[Autoplay] Failed to fetch video details for ${basisSong.title}: ${videoDetailsResponse.status}`);
+      }
+    } catch (error) {
+      console.error(`[Autoplay] Error fetching video details for ${basisSong.title}:`, error);
+    }
+
+    const query = genreHint ? `${basisSong.artist} ${genreHint} music` : `${basisSong.artist} music`;
+    console.log(`[Autoplay] Constructed suggestion query: "${query}"`);
+    
+    try {
+      const searchResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=10&key=${YOUTUBE_API_KEY}`
+      );
+      if (!searchResponse.ok) {
+        console.error("[Autoplay] Suggestion API search error:", await searchResponse.text());
         return [];
       }
-      const data = await response.json();
+      const data = await searchResponse.json();
       const items = data.items || [];
       const currentQ = roomStateRef.current?.queue || [];
+      
       const autoplayCandidates: Song[] = items
         .map((item: any): Song => ({
           id: item.id.videoId, title: item.snippet.title, artist: item.snippet.channelTitle,
           channelId: item.snippet.channelId, thumbnailUrl: item.snippet.thumbnails.default.url, dataAiHint: "music video",
         }))
-        .filter((newSong: Song) => newSong.id !== basisSong.id && !currentQ.some(qSong => qSong.id === newSong.id));
+        .filter((newSong: Song) => 
+            newSong.id !== basisSong.id && 
+            !currentQ.some(qSong => qSong.id === newSong.id)
+        );
       
-      // console.log(`[PlayerPage fetchAutoplaySuggestions] Found ${autoplayCandidates.length} candidates for autoplay.`);
-      return autoplayCandidates.slice(0,5); // Return top 5 unique candidates
+      console.log(`[Autoplay] Found ${autoplayCandidates.length} candidates for autoplay.`);
+      return autoplayCandidates.slice(0, 5); // Return top 5 unique candidates
     } catch (error) {
-      console.error("Error fetching autoplay suggestions:", error);
+      console.error("[Autoplay] Error fetching autoplay suggestions:", error);
       return [];
     }
   }, [apiKeyMissing, YOUTUBE_API_KEY]); 
 
   const initiateAutoplay = useCallback(async () => {
     if (!lastPlayedSongForAutoplay || autoplayInitiatedByHostRef.current || !isCurrentUserHost || !currentUser) {
-        // console.log('[PlayerPage initiateAutoplay] Conditions not met or already initiated by host.');
+        if (!lastPlayedSongForAutoplay) console.log('[Autoplay initiateAutoplay] No lastPlayedSongForAutoplay.');
+        else if (autoplayInitiatedByHostRef.current) console.log('[Autoplay initiateAutoplay] Already initiated by host.');
+        else if (!isCurrentUserHost) console.log('[Autoplay initiateAutoplay] Not host.');
+        else if (!currentUser) console.log('[Autoplay initiateAutoplay] No current user.');
         return;
     }
-    console.log('[PlayerPage initiateAutoplay] Host attempting to initiate autoplay.');
+    console.log('[Autoplay initiateAutoplay] Host attempting to initiate autoplay based on:', lastPlayedSongForAutoplay.title);
     autoplayInitiatedByHostRef.current = true; 
     
     const candidates = await fetchAutoplaySuggestions(lastPlayedSongForAutoplay);
     if (candidates.length > 0) {
-        console.log(`[PlayerPage initiateAutoplay] Autoplay found ${candidates.length} candidates. Adding batch to queue.`);
+        console.log(`[Autoplay initiateAutoplay] Autoplay found ${candidates.length} candidates. Adding batch to queue.`);
         const currentQ = roomStateRef.current?.queue || [];
         const newQueue = [...currentQ, ...candidates];
 
@@ -740,25 +799,32 @@ export default function PlayerPage() {
         toast({ title: "Autoplay", description: `Added ${candidates.length} song(s) to the queue.` });
     } else {
       toast({ title: "Autoplay", description: "Couldn't find any suitable next songs for autoplay." });
-      console.log('[PlayerPage initiateAutoplay] Autoplay found no candidates.');
+      console.log('[Autoplay initiateAutoplay] Autoplay found no candidates.');
     }
     
     setTimeout(() => { 
         autoplayInitiatedByHostRef.current = false;
-    }, 3000);
+        console.log('[Autoplay initiateAutoplay] Reset autoplayInitiatedByHostRef.');
+    }, 5000); // Increased timeout to prevent rapid re-triggering
 
   }, [lastPlayedSongForAutoplay, fetchAutoplaySuggestions, updateServerRoomState, toast, isCurrentUserHost, currentUser]);
 
   useEffect(() => { 
-    if (isAutoplayEnabled && isCurrentUserHost && roomState?.currentQueueIndex === -1 && lastPlayedSongForAutoplay) {
-      console.log("[PlayerPage AutoplayEffect] Conditions met, initiating autoplay sequence.");
+    if (isAutoplayEnabled && isCurrentUserHost && roomState?.currentQueueIndex === -1 && lastPlayedSongForAutoplay && !autoplayInitiatedByHostRef.current) {
+      console.log("[Autoplay AutoplayEffect] Conditions met, initiating autoplay sequence for song:", lastPlayedSongForAutoplay.title);
       initiateAutoplay();
+    } else {
+        if (!isAutoplayEnabled) console.log("[Autoplay AutoplayEffect] Autoplay not enabled.");
+        else if (!isCurrentUserHost) console.log("[Autoplay AutoplayEffect] Not current user host.");
+        else if (roomState?.currentQueueIndex !== -1) console.log("[Autoplay AutoplayEffect] Queue not at -1 index (current index: " + roomState?.currentQueueIndex + ").");
+        else if (!lastPlayedSongForAutoplay) console.log("[Autoplay AutoplayEffect] No last played song for autoplay.");
+        else if (autoplayInitiatedByHostRef.current) console.log("[Autoplay AutoplayEffect] Autoplay already initiated by host ref.");
     }
   }, [isAutoplayEnabled, roomState?.currentQueueIndex, isCurrentUserHost, lastPlayedSongForAutoplay, initiateAutoplay]);
 
 
   const upNextQueue = queue.slice((roomState?.currentQueueIndex ?? -1) + 1);
-  const activeUsers = roomUsers;
+  const activeUsers = roomUsers; // Using the simplified version from previous step for now
 
 
   if (isRoomLoading) {
@@ -874,8 +940,9 @@ export default function PlayerPage() {
                     <Switch
                         id="autoplay-switch"
                         checked={isAutoplayEnabled}
-                        onCheckedChange={handleToggleAutoplay}
+                        onCheckedChange={handleToggleAutoplaySwitch}
                         aria-label="Toggle Autoplay"
+                        disabled={apiKeyMissing}
                     />
                     <Label htmlFor="autoplay-switch" className="text-sm text-muted-foreground cursor-pointer">
                         Autoplay
@@ -893,6 +960,18 @@ export default function PlayerPage() {
                  {!canCurrentUserAddSongs && !apiKeyMissing && (
                     <p className="text-xs text-accent mt-2">Waiting for host to grant permission to add songs.</p>
                 )}
+                 <div className="flex items-center space-x-2 pt-4">
+                    <Switch
+                        id="autoplay-switch-placeholder"
+                        checked={isAutoplayEnabled}
+                        onCheckedChange={handleToggleAutoplaySwitch}
+                        aria-label="Toggle Autoplay"
+                        disabled={apiKeyMissing}
+                    />
+                    <Label htmlFor="autoplay-switch-placeholder" className="text-sm text-muted-foreground cursor-pointer">
+                        Autoplay
+                    </Label>
+                  </div>
               </Card>
             )}
           </div>
@@ -984,7 +1063,6 @@ export default function PlayerPage() {
                 <CardContent className="flex-grow p-0 overflow-hidden">
                     <ScrollArea className="h-full max-h-[200px] px-4 pb-2">
                         <div className="space-y-3 py-2">
-                            {/* console.log('[PlayerPage] Rendering Participants. roomState.users:', roomState?.users) */}
                             {activeUsers.length === 0 && (
                                 <p className="text-sm text-muted-foreground text-center py-4">No other participants currently active.</p>
                             )}
@@ -1074,4 +1152,5 @@ export default function PlayerPage() {
   );
 }
 
+    
     
