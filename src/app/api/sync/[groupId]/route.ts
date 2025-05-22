@@ -26,9 +26,11 @@ export async function GET(
   }
 
   let keepAliveInterval: NodeJS.Timeout | undefined = undefined;
+  let controller: ReadableStreamDefaultController | null = null; // Keep a reference to the controller
 
   const stream = new ReadableStream({
-    start(controller) {
+    start(streamController) {
+      controller = streamController; // Assign to the outer scope controller
       console.log(`[SSE /api/sync/${groupId}] Stream starting...`);
       try {
         addSSEClient(groupId, controller);
@@ -36,8 +38,6 @@ export async function GET(
         let currentRoomState = getRoomState(groupId);
         if (!currentRoomState) {
           console.warn(`[SSE /api/sync/${groupId}] Room not found by getRoomState, attempting to initialize implicitly via update call (will happen on first client action).`);
-          // Initialize a minimal state if the room truly doesn't exist yet,
-          // it will be fully populated by the first client action (like announcing presence)
           currentRoomState = initializeRoom(groupId);
         }
         
@@ -50,32 +50,41 @@ export async function GET(
         
         keepAliveInterval = setInterval(() => {
           try {
-            if (controller.desiredSize === null || controller.desiredSize > 0) {
+            if (controller && (controller.desiredSize === null || controller.desiredSize > 0)) {
               // console.log(`[SSE /api/sync/${groupId}] Sending keep-alive.`);
               controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
             } else {
-              console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null for keep-alive, closing. Size: ${controller.desiredSize}`);
+              console.warn(`[SSE /api/sync/${groupId}] Controller desiredSize not positive or null for keep-alive, closing. Size: ${controller?.desiredSize}`);
               if (keepAliveInterval) clearInterval(keepAliveInterval);
               keepAliveInterval = undefined;
-              removeSSEClient(groupId, controller); 
-              try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+              if (controller) {
+                removeSSEClient(groupId, controller); 
+                try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+                controller = null;
+              }
             }
           } catch (e) {
             console.error(`[SSE /api/sync/${groupId}] Error sending keep-alive:`, e);
             if (keepAliveInterval) clearInterval(keepAliveInterval);
             keepAliveInterval = undefined;
-            removeSSEClient(groupId, controller);
-            try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+            if (controller) {
+              removeSSEClient(groupId, controller);
+              try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+              controller = null;
+            }
           }
-        }, 10000); // Reduced keep-alive interval to 10 seconds
+        }, 10000); // Keep-alive interval (e.g., 10 seconds)
 
 
         request.signal.addEventListener('abort', () => {
           console.log(`[SSE /api/sync/${groupId}] Request aborted by client, cleaning up.`);
           if (keepAliveInterval) clearInterval(keepAliveInterval);
           keepAliveInterval = undefined;
-          removeSSEClient(groupId, controller);
-          try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+          if (controller) {
+            removeSSEClient(groupId, controller);
+            try { if (controller.desiredSize !== null) controller.close(); } catch { /* ignore */ }
+            controller = null;
+          }
         });
 
       } catch (e: unknown) {
@@ -83,20 +92,23 @@ export async function GET(
         console.error(`[SSE CRITICAL ERROR /api/sync/${groupId}] Error during stream setup or initial send:`, error.message, error.stack);
         if (keepAliveInterval) clearInterval(keepAliveInterval);
         keepAliveInterval = undefined;
-        removeSSEClient(groupId, controller); 
-        try {
-          if (controller.desiredSize !== null) { 
-             controller.error(error); 
+        if (controller) {
+          removeSSEClient(groupId, controller); 
+          try {
+            if (controller.desiredSize !== null) { 
+               controller.error(error); 
+            }
+          } catch (errSignalError) {
+              console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
           }
-        } catch (errSignalError) {
-            console.error(`[SSE /api/sync/${groupId}] Error signaling controller error:`, errSignalError);
-        }
-        try { 
-          if (controller.desiredSize !== null) { 
-            controller.close(); 
+          try { 
+            if (controller.desiredSize !== null) { 
+              controller.close(); 
+            }
+          } catch (closeErr) {
+              console.error(`[SSE /api/sync/${groupId}] Error closing controller after critical error:`, closeErr);
           }
-        } catch (closeErr) {
-            console.error(`[SSE /api/sync/${groupId}] Error closing controller after critical error:`, closeErr);
+          controller = null;
         }
       }
     },
@@ -104,7 +116,10 @@ export async function GET(
       console.log(`[SSE /api/sync/${groupId}] Stream cancelled. Reason:`, _reason);
       if (keepAliveInterval) clearInterval(keepAliveInterval);
       keepAliveInterval = undefined;
-      removeSSEClient(groupId, controller); // Ensure cleanup on cancel as well
+      if (controller) {
+        removeSSEClient(groupId, controller); // Ensure cleanup on cancel as well
+        controller = null;
+      }
     }
   });
 
@@ -113,7 +128,9 @@ export async function GET(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform', 
       'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no', 
+      'X-Accel-Buffering': 'no', // Important for preventing buffering by reverse proxies
+      // Consider adding CORS headers if your frontend and API are on different origins, though usually not needed for same-origin Next.js API routes.
+      // 'Access-Control-Allow-Origin': '*', 
     },
   });
 }
@@ -140,13 +157,13 @@ export async function POST(
     const rawBodyString = JSON.stringify(body);
     console.log(`[POST /api/sync/${groupId}] Received raw body: ${rawBodyString.substring(0, 300)}${rawBodyString.length > 300 ? '...' : ''}`);
     console.log(`[POST /api/sync/${groupId}] Received body.type: |${body.type}|`);
-    console.log(`[POST /api/sync/${groupId}] Received full body object:`, body);
+    // console.log(`[POST /api/sync/${groupId}] Received full body object:`, body);
 
 
     if (body.type === 'STATE_UPDATE') {
-      if (!body.payload) {
-        console.error(`[POST /api/sync/${groupId}] STATE_UPDATE received with no payload.`);
-        return NextResponse.json({ error: 'STATE_UPDATE requires a payload' }, { status: 400 });
+      if (!body.payload && Object.keys(body.payload || {}).length === 0 && !body.userId) { // Allow empty payload if userId is present for presence
+        console.error(`[POST /api/sync/${groupId}] STATE_UPDATE received with no payload and no acting user for presence.`);
+        return NextResponse.json({ error: 'STATE_UPDATE requires a payload or acting user details' }, { status: 400 });
       }
       const updatedRoom = updateRoomStateAndBroadcast(groupId, body.payload as Partial<RoomState>, body.userId, body.username);
       return NextResponse.json(updatedRoom, { status: 200 });
@@ -211,3 +228,5 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid request body or server error' }, { status: 500 });
   }
 }
+
+    
